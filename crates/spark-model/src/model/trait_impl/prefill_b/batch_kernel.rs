@@ -44,7 +44,22 @@ impl TransformerModel {
     /// Returns true when the batched-kernel path is viable for these
     /// streams. Cheap upfront check — caller (dispatch) falls back to
     /// per-stream when false.
+    ///
+    /// SSM models are refused unconditionally: the Q12 per-layer batched
+    /// dispatchers (`prefill_ssm_batched_layer` etc.) are "compile-only"
+    /// per the file docstring above, and the SSM dispatcher mis-indexes
+    /// `ssm_pool` slots when N>=2 concurrent prefill streams are batched
+    /// into a single layer call, surfacing as `cuMemcpyHtoDAsync_v2
+    /// failed: status 700` and poisoning the CUDA context. Until the
+    /// SSM-batched path is hardware-validated, fall back to the
+    /// per-stream loop (the existing well-tested behaviour for SSM
+    /// prefills).
     pub(in crate::model) fn kernel_batched_eligible(&self, streams: &[PrefillSlice<'_>]) -> bool {
+        // Model-aware gate using the live `&self.config`. `num_ssm_layers`
+        // counts `layer_types` entries equal to `LinearAttention`.
+        if self.config.num_ssm_layers() > 0 {
+            return false;
+        }
         check_kernel_batched_eligible(
             streams
                 .iter()
