@@ -93,10 +93,14 @@ in
     pkg-config
     cmake
     autoAddDriverRunpath
-    # bindgen for the sys crates (cudarc, xgrammar-rs) needs libclang.
-    # `rustPlatform.bindgenHook` in heim's derivation expands to
-    # LIBCLANG_PATH + the runtime; we set LIBCLANG_PATH below.
-    llvmPackages.libclang
+    # bindgen for the sys crates (cudarc, xgrammar-rs) needs libclang
+    # AND the libstdc++ headers (xgrammar-rs's autocxx includes
+    # `<memory>` etc). `rustPlatform.bindgenHook` is the canonical
+    # setup hook that wires LIBCLANG_PATH + `BINDGEN_EXTRA_CLANG_ARGS`
+    # with -isystem paths for the C++ stdlib. In a Nix derivation it
+    # fires as part of nativeBuildInputs; in a devenv shell it fires
+    # the same way (setup hooks are sourced when the shell is entered).
+    rustPlatform.bindgenHook
   ]) ++ (with cuda13; [
     cuda_nvcc
     cuda_cudart
@@ -115,6 +119,9 @@ in
     ATLAS_TARGET_HW = "gb10";
     ATLAS_TARGET_MODEL = "qwen3.6-35b-a3b";
     ATLAS_TARGET_QUANT = "*";
+    # LIBCLANG_PATH is also set by `rustPlatform.bindgenHook` above;
+    # set explicitly so direct `cargo build` invocations outside an
+    # already-sourced shell still find libclang.
     LIBCLANG_PATH = "${lib.getLib pkgs.llvmPackages.libclang}/lib";
     XGRAMMAR_SRC_DIR = "${xgrammarSrc}";
   };
