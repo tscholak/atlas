@@ -28,6 +28,11 @@ target/
 .vscode/
 .idea/
 
+# devenv.sh dev shell state (generated; the *.nix / *.yaml / *.lock are tracked)
+.devenv/
+.devenv.flake.nix
+.direnv/
+
 # Python caches
 __pycache__/
 *.pyc

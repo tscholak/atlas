@@ -14,6 +14,33 @@ to upstream as their fixes mature.
 | `heim: sync default_stream at decode_batch_dispatch exit (cross-stream race fix)` | `decode_batch_dispatch` (n>=2 non-EP path) silently shadows the caller's stream with `default_stream` for graph-capture determinism, but `prefill_chunk_dispatch` respects the caller's stream. The default `mixed_forward_batch` impl calls them back-to-back assuming they share a stream → two streams writing the same `self.buffers.*` singletons → `CUDA_ERROR_ILLEGAL_ADDRESS`. Initial fix: CPU `gpu.synchronize(default_stream)` at function exit. **Superseded by the event-handshake commit below.** | filed as part of the follow-up PR |
 | `heim: cross-stream event handshake at decode_batch_dispatch exit` | Replaces the CPU-sync fix above. Adds a dedicated `decode_batch_done_event` field on `TransformerModel`; records on default_stream and has the caller's stream wait. GPU-side ordering, no CPU stall, lets decode and prefill overlap on the GPU. Aggregate concurrent throughput climbs from ~41 → expected ~150–200 tok/s on Qwen3.6-35B-A3B-FP8. Full diagnosis in `heim/docs/atlas-bug-mixed-batch-illegal-address.md`. | not yet filed |
 
+## Iterating on atlas
+
+The fork carries a `devenv.nix` + `devenv.yaml` (standalone-mode
+[devenv.sh](https://devenv.sh)) that mirrors heim's
+`packages/atlas/default.nix` build env: same `cudaPackages_13_2`,
+same `rust-toolchain.toml` pin, same `XGRAMMAR_SRC_DIR` rev, same
+`ATLAS_TARGET_*` env vars. On the Spark:
+
+```sh
+git clone git@github.com:tscholak/atlas.git ~/atlas-dev
+cd ~/atlas-dev
+git checkout heim/main
+devenv shell                            # enters the dev env
+cargo build --release -p spark-server   # ~10-15 min first build,
+                                        # seconds to minutes incremental
+```
+
+The resulting `./target/release/atlas` is functionally identical to
+the binary heim's Nix derivation produces. Heim's
+`dev/atlas-iterate.sh` wraps the rsync + cargo + binary-swap + smoke
+test sequence so each iteration is one command.
+
+For production deploys, the Nix derivation in heim is still the
+source of truth; the dev shell only exists to compress the inner loop.
+See heim's `docs/atlas-bug-mixed-batch-illegal-address.md` for the
+broader workflow context.
+
 ## How heim consumes this branch
 
 heim's `packages/atlas/default.nix` uses `fetchFromGitHub { owner = "tscholak"; repo = "atlas"; rev = "<heim/main tip>"; }`. To advance the closure to a new atlas commit on this branch:

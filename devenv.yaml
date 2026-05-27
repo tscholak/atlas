@@ -1,0 +1,17 @@
+inputs:
+  # graham33's overlay carries the DGX-Spark CUDA stack: cudaPackages_13_2,
+  # cudaCapabilities = [ "12.1" ] for sm_121 (GB10 Blackwell), and the
+  # autoAddDriverRunpath plumbing. Atlas links against this exact stack
+  # via heim's `packages/atlas/default.nix`; using the same overlay here
+  # keeps the dev binary ABI-identical to the production build.
+  dgx-spark:
+    url: github:graham33/nixos-dgx-spark
+    overlays:
+    - fixes
+  nixpkgs:
+    follows: dgx-spark/nixpkgs
+nixpkgs:
+  per_platform:
+    aarch64-linux:
+      allow_unfree: true
+      cuda_support: true
