@@ -46,6 +46,29 @@ impl TransformerModel {
             return Ok(self.decode_logits_ptr());
         }
 
+        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        // STREAM HAZARD: the original `stream` parameter is shadowed
+        // below to `default_stream`, because the n≥2 graph capture/
+        // replay must happen on a fixed stream. But the caller (see e.g.
+        // the default `mixed_forward_batch` impl in `traits/model.rs`)
+        // continues issuing GPU ops on its own `stream` parameter
+        // immediately after this function returns — writing to the same
+        // `self.buffers.*` singletons (hidden_states, residual, logits)
+        // that our queued work on default_stream is still using.
+        //
+        // `prefill_chunk_dispatch` (prefill_b.rs:71-77) respects the
+        // caller's stream; `decode_batch_dispatch` silently switches.
+        // Two streams + shared GPU buffers + no inter-stream sync
+        // = race + CUDA_ERROR_ILLEGAL_ADDRESS the moment the next
+        // caller op starts dispatching on the original stream while
+        // our decode kernels are still running on default_stream.
+        // This is the trigger for the
+        // `phase_continue_prefills::run_batched_mixed: Mixed-batch
+        // forward error (n_decode=N, n_prefill=M): cuMemcpyHtoDAsync_v2
+        // failed: status 700` crash on hybrid Mamba-MoE models.
+        //
+        // Preserve the caller's stream so we can synchronise at exit.
+        let caller_stream = stream;
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
@@ -301,6 +324,26 @@ impl TransformerModel {
         for (i, seq) in seqs.iter_mut().enumerate() {
             seq.tokens.push(tokens[i]);
             seq.seq_len += 1;
+        }
+
+        // Close the stream hazard described at the top of this function.
+        // The caller will start issuing ops on `caller_stream` as soon as
+        // we return; without this barrier, those ops race against our
+        // pending default_stream work on the shared GPU scratch buffers.
+        //
+        // CPU-side `synchronize` is the minimal-risk fix here — we know
+        // the next caller op is on a different stream, and we don't have
+        // a dedicated CUDA event to record on (the only model-level
+        // event, `secondary_event`, is owned by `async_chkpt`'s flow).
+        // A future refinement could add a dedicated `decode_batch_event`
+        // field on TransformerModel for a GPU-only sync; for now we
+        // pay the CPU stall to remove the race deterministically.
+        //
+        // When the caller already passed `default_stream` (the
+        // decode-only fast path), the work is on the same stream they
+        // continue on and no extra sync is needed.
+        if caller_stream != stream {
+            self.gpu.synchronize(stream)?;
         }
 
         Ok(self.decode_logits_ptr())
