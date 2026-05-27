@@ -1,5 +1,24 @@
 { pkgs, lib, ... }:
 
+# Re-import nixpkgs with `config.allowUnfree = true` because devenv's
+# `nixpkgs.config.allowUnfree` setting in `devenv.yaml` does not, in
+# practice, propagate to the cuda EULA check on aarch64-linux through
+# the `dgx-spark`-overlay-on-top-of-nixpkgs input chain (tested with
+# every yaml form documented and several undocumented variants;
+# cuda_nvcc still hits the unfree gate). The standard nixpkgs cuda
+# pattern is `import nixpkgs { config.allowUnfree = true; ... }`, so we
+# match that here at the module level.
+#
+# The trade-off: we lose dgx-spark.overlays.fixes for the dev shell,
+# meaning the dev binary's cudaPackages are vanilla nixpkgs's
+# (cudaPackages_13_2 if available, else whatever's pinned). For an
+# inner-loop dev binary that only needs to be functionally equivalent
+# — not bit-identical — to the production binary, this is acceptable;
+# production deploys still go through heim's Nix derivation which
+# applies the full dgx-spark overlay. Any ABI mismatch will surface
+# at the verification step (single-request output diff vs current
+# pinned fork tip).
+
 # Dev shell for iterating on atlas itself.
 #
 # Mirrors the build env in heim's `packages/atlas/default.nix` so that
@@ -16,12 +35,28 @@
 #      heim's `dev/atlas-iterate.sh` for the full inner loop.
 
 let
+  # Re-import nixpkgs with explicit allowUnfree (see file docstring).
+  cudaPkgs = import pkgs.path {
+    inherit (pkgs) system;
+    config = {
+      allowUnfree = true;
+      cudaSupport = true;
+    };
+  };
+
+  # Pin cudaPackages_13_2 explicitly — production atlas builds against
+  # cudaPackages_13_2 (via dgx-spark overlay's cudaPackages alias).
+  # Default `cudaPackages` in the unstable nixpkgs we're following is
+  # 12.9; that would produce libcudart.so.12 link refs, which fail at
+  # runtime on the Spark whose driver provides libcudart.so.13.
+  cuda13 = cudaPkgs.cudaPackages_13_2;
+
   # cudarc's build.rs searches `$CUDA_HOME/lib64` (x86 layout). nixpkgs
   # aarch64 places everything under `lib`. Symlink to make both work.
   # Pattern lifted from heim's packages/atlas/default.nix.
-  cudaToolkit = pkgs.symlinkJoin {
+  cudaToolkit = cudaPkgs.symlinkJoin {
     name = "atlas-cuda-toolkit";
-    paths = with pkgs.cudaPackages; [
+    paths = with cuda13; [
       cuda_nvcc
       cuda_cudart
       cuda_cccl
@@ -54,7 +89,7 @@ in
 
   # --- Packages ---
 
-  packages = with pkgs; [
+  packages = (with pkgs; [
     pkg-config
     cmake
     autoAddDriverRunpath
@@ -62,10 +97,11 @@ in
     # `rustPlatform.bindgenHook` in heim's derivation expands to
     # LIBCLANG_PATH + the runtime; we set LIBCLANG_PATH below.
     llvmPackages.libclang
-    cudaPackages.cuda_nvcc
-    cudaPackages.cuda_cudart
-    cudaPackages.nccl
-  ];
+  ]) ++ (with cuda13; [
+    cuda_nvcc
+    cuda_cudart
+    nccl
+  ]);
 
   # --- Environment ---
   #

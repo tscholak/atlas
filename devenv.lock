@@ -23,7 +23,9 @@
         "flake-parts": "flake-parts",
         "nix-gl-host": "nix-gl-host",
         "nixified-ai": "nixified-ai",
-        "nixpkgs": "nixpkgs",
+        "nixpkgs": [
+          "nixpkgs"
+        ],
         "pre-commit-hooks": "pre-commit-hooks"
       },
       "locked": {
@@ -230,15 +232,16 @@
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1776616485,
-        "narHash": "sha256-n+j1THgYwvcKhB5G29+mpcb9NJMM1wDMVavnn0zRCsA=",
+        "lastModified": 1779560665,
+        "narHash": "sha256-tpyBcxPpcQb8ukyNF7DoCwfSY3VPsxHoYwj00Cayv5o=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "e8ac1bbff8b912dcf00b8fd347e62e581095c9bb",
+        "rev": "64c08a7ca051951c8eae34e3e3cb1e202fe36786",
         "type": "github"
       },
       "original": {
         "owner": "NixOS",
+        "ref": "nixos-unstable",
         "repo": "nixpkgs",
         "type": "github"
       }
@@ -285,10 +288,7 @@
       "inputs": {
         "devenv": "devenv",
         "dgx-spark": "dgx-spark",
-        "nixpkgs": [
-          "dgx-spark",
-          "nixpkgs"
-        ]
+        "nixpkgs": "nixpkgs"
       }
     }
   },
