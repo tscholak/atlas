@@ -124,6 +124,20 @@ pub struct TransformerModel {
     pub(super) secondary_stream: u64,
     /// CUDA event for GPU-side inter-stream synchronization (avoids CPU-blocking sync).
     pub(super) secondary_event: u64,
+    /// CUDA event for cross-stream sync at `decode_batch_dispatch` exit
+    /// (n>=2 non-EP path). That function silently shadows the caller's
+    /// stream with `default_stream` for graph-capture determinism, then
+    /// returns. The default `mixed_forward_batch` impl in
+    /// `traits/model.rs` continues issuing GPU ops on the caller's
+    /// stream against the same shared `self.buffers.*` singletons — a
+    /// cross-stream race without a handshake. Recording this event on
+    /// `default_stream` and having the caller's stream wait for it
+    /// closes the race on the GPU side without a CPU stall. Dedicated
+    /// to this use rather than reusing `secondary_event` because the
+    /// MTP / async-checkpoint flow (which owns secondary_event) can
+    /// interleave with `decode_batch_dispatch` inside the same forward
+    /// tick. See `trait_impl/decode_a2.rs` for the rationale.
+    pub(super) decode_batch_done_event: u64,
     /// Communication backend for expert parallelism (EP) all-reduce.
     /// None for single-GPU (no distributed communication needed).
     pub(super) comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,

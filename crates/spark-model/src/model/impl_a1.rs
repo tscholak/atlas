@@ -213,6 +213,11 @@ impl TransformerModel {
         // Secondary stream + event for pipelining checkpoint D2D with MTP propose.
         let secondary_stream = gpu.create_stream()?;
         let secondary_event = gpu.create_event()?;
+        // Dedicated event for the cross-stream handshake at the exit of
+        // `decode_batch_dispatch`'s n>=2 non-EP path. Lives in its own
+        // handle because the async-checkpoint flow (secondary_event)
+        // can interleave with decode_batch inside the same forward tick.
+        let decode_batch_done_event = gpu.create_event()?;
 
         // EP: register moe_output buffer with NCCL and provide bf16_add kernel.
         if let Some(ref comm) = comm
@@ -444,6 +449,7 @@ impl TransformerModel {
             prefix_cache,
             secondary_stream,
             secondary_event,
+            decode_batch_done_event,
             comm,
             ep_cmd_buf,
             self_speculative,

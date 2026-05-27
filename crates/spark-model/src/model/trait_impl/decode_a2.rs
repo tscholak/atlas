@@ -67,7 +67,9 @@ impl TransformerModel {
         // forward error (n_decode=N, n_prefill=M): cuMemcpyHtoDAsync_v2
         // failed: status 700` crash on hybrid Mamba-MoE models.
         //
-        // Preserve the caller's stream so we can synchronise at exit.
+        // Preserve the caller's stream so we can post a cross-stream
+        // event handshake at exit (see the matching block before the
+        // `Ok(...)` return).
         let caller_stream = stream;
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
@@ -327,23 +329,32 @@ impl TransformerModel {
         }
 
         // Close the stream hazard described at the top of this function.
-        // The caller will start issuing ops on `caller_stream` as soon as
-        // we return; without this barrier, those ops race against our
-        // pending default_stream work on the shared GPU scratch buffers.
+        // The caller will start issuing ops on `caller_stream` as soon
+        // as we return; without this handshake, those ops race against
+        // our pending default_stream work on the shared GPU scratch
+        // buffers.
         //
-        // CPU-side `synchronize` is the minimal-risk fix here — we know
-        // the next caller op is on a different stream, and we don't have
-        // a dedicated CUDA event to record on (the only model-level
-        // event, `secondary_event`, is owned by `async_chkpt`'s flow).
-        // A future refinement could add a dedicated `decode_batch_event`
-        // field on TransformerModel for a GPU-only sync; for now we
-        // pay the CPU stall to remove the race deterministically.
+        // GPU-side cross-stream event handshake: record our completion
+        // marker on `stream` (= default_stream) after all decode work is
+        // queued there, then have the caller's stream wait for it. The
+        // CPU never blocks, the GPU enforces the ordering, and decode
+        // and prefill can overlap on the GPU as much as their resource
+        // use allows.
+        //
+        // Uses a dedicated `decode_batch_done_event` (not
+        // `secondary_event`, which is owned by `async_chkpt`'s flow —
+        // that flow can interleave with this one inside the same
+        // forward tick, so sharing the handle would race two unrelated
+        // record/wait pairs).
         //
         // When the caller already passed `default_stream` (the
         // decode-only fast path), the work is on the same stream they
         // continue on and no extra sync is needed.
         if caller_stream != stream {
-            self.gpu.synchronize(stream)?;
+            self.gpu
+                .record_event(self.decode_batch_done_event, stream)?;
+            self.gpu
+                .stream_wait_event(caller_stream, self.decode_batch_done_event)?;
         }
 
         Ok(self.decode_logits_ptr())
