@@ -26,6 +26,7 @@ impl TransformerModel {
         chunk_start: usize,
         chunk_len: usize,
         proc_count: usize,
+        buffers: &spark_runtime::buffers::BufferArena,
         stream: u64,
     ) -> Result<DevicePtr> {
         self.prefill_b_finalize_last_at(
@@ -36,6 +37,7 @@ impl TransformerModel {
             chunk_len,
             proc_count,
             0,
+            buffers,
             stream,
         )
     }
@@ -53,6 +55,7 @@ impl TransformerModel {
         chunk_len: usize,
         proc_count: usize,
         hidden_stream_offset_tokens: usize,
+        buffers: &spark_runtime::buffers::BufferArena,
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size;
@@ -61,13 +64,13 @@ impl TransformerModel {
         } else {
             2usize
         };
-        let hidden = self.buffers.hidden_states();
+        let hidden = buffers.hidden_states();
         let bs = kv_cache.block_size();
 
         // ── 6. Final norm on LAST token only ──
         let last_token_offset = hidden_stream_offset_tokens + proc_count - 1;
         let last_hidden = hidden.offset(last_token_offset * h * fp32);
-        let normed = self.buffers.norm_output();
+        let normed = buffers.norm_output();
         let eps = self.config.rms_norm_eps as f32;
         ops::rms_norm(
             self.gpu.as_ref(),
@@ -94,14 +97,14 @@ impl TransformerModel {
         }
 
         // ── 7. LM head on last token → logits ──
-        self.lm_head(normed, stream)?;
+        self.lm_head(normed, buffers, stream)?;
 
         // Diagnostic: logits stats
         if (chunk_start + chunk_len) > 16384
             || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
         {
             self.gpu.synchronize(stream)?;
-            let logits_ptr = self.buffers.logits();
+            let logits_ptr = buffers.logits();
             let n_logits = self.config.vocab_size;
             let mut buf = vec![0u8; n_logits * 2];
             self.gpu.copy_d2h(logits_ptr, &mut buf)?;

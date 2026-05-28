@@ -57,6 +57,7 @@ pub fn step_decode_only(
 
     let mut refs: Vec<&mut SequenceState> = active.iter_mut().map(|a| &mut a.seq).collect();
 
+    let lockprof_decode_t0 = std::time::Instant::now();
     let logits = match model.decode_batch(&tokens, &mut refs, 0) {
         Ok(l) => l,
         Err(e) => {
@@ -67,6 +68,11 @@ pub fn step_decode_only(
             return;
         }
     };
+    tracing::info!(
+        target: "atlas::lockprof",
+        "phase_decode_only n={n} model_call={:.2}ms",
+        lockprof_decode_t0.elapsed().as_micros() as f64 / 1000.0,
+    );
 
     process_decode_logits(
         model,

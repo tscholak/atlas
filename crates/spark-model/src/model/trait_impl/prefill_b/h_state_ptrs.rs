@@ -40,6 +40,7 @@ impl TransformerModel {
         layer_idx: usize,
         seqs: &mut [&mut SequenceState],
         scratch_offset_bytes: usize,
+        buffers: &spark_runtime::buffers::BufferArena,
         stream: u64,
     ) -> Result<DevicePtr> {
         let n = seqs.len();
@@ -61,7 +62,7 @@ impl TransformerModel {
             h_ptrs.push(ssm_state.h_state.0);
         }
 
-        let dst = self.buffers.scratch().offset(scratch_offset_bytes);
+        let dst = buffers.scratch().offset(scratch_offset_bytes);
         let bytes = unsafe {
             std::slice::from_raw_parts(h_ptrs.as_ptr() as *const u8, n * std::mem::size_of::<u64>())
         };

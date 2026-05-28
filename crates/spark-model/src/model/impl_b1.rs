@@ -341,7 +341,7 @@ impl TransformerModel {
             eps,
             stream,
         )?;
-        self.lm_head(normed, stream)?;
+        self.lm_head(normed, &self.buffers, stream)?;
         self.gpu.synchronize(stream)?;
         let head_us = t0.elapsed().as_micros() as u64;
 
@@ -489,7 +489,7 @@ impl TransformerModel {
             eps,
             stream,
         )?;
-        self.lm_head(normed, stream)?;
+        self.lm_head(normed, &self.buffers, stream)?;
 
         seq.tokens.push(token);
         seq.seq_len += 1;

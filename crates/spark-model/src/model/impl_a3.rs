@@ -200,7 +200,16 @@ impl TransformerModel {
         Ok(logits)
     }
 
-    pub(super) fn lm_head(&self, hidden: DevicePtr, stream: u64) -> Result<DevicePtr> {
+    /// LM head GEMV onto the caller-supplied arena's logits buffer.
+    /// Decode/standalone-prefill callers pass `&self.buffers`; the mixed-
+    /// batch prefill side passes `&self.secondary_buffers` so it doesn't
+    /// race a concurrent decode on the primary arena.
+    pub(super) fn lm_head(
+        &self,
+        hidden: DevicePtr,
+        buffers: &spark_runtime::buffers::BufferArena,
+        stream: u64,
+    ) -> Result<DevicePtr> {
         let h = self.config.hidden_size as u32;
         let v = self.config.vocab_size as u32;
         // Pick the output buffer: FP32 scratch when use_fp32_logits is on,
@@ -209,7 +218,7 @@ impl TransformerModel {
         let (logits, fp32) = if self.use_fp32_logits {
             (self.logits_fp32_buf, true)
         } else {
-            (self.buffers.logits(), false)
+            (buffers.logits(), false)
         };
         if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             // Pick FP32-output variant when the FP32 logits buffer is the

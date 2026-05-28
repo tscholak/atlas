@@ -191,6 +191,15 @@ impl TransformerModel {
             stream
         };
 
+        // Pick arena based on stream identity — see prefill_chunk_dispatch
+        // for the rationale (decode/prefill must not share buffers when
+        // mixed_forward_batch runs prefill on a non-default stream).
+        let buffers = if stream != self.gpu.default_stream() {
+            &self.secondary_buffers
+        } else {
+            &self.buffers
+        };
+
         // Lock KV cache once for the whole batched dispatch.
         let mut kv_cache = self.kv_cache.lock();
 
@@ -207,9 +216,9 @@ impl TransformerModel {
             // EP=2 zeroes ALL buffers per chunk for NCCL defence-in-depth.
             // EP=1 zeroes essentials only at chunk_start==0 (stale data).
             if self.comm.is_some() {
-                self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+                buffers.zero_all(self.gpu.as_ref(), stream)?;
             } else if chunk_start == 0 {
-                self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+                buffers.zero_all(self.gpu.as_ref(), stream)?;
             }
 
             // Phase 1+1b: embed at the shared hidden-buffer offset 0.
@@ -217,7 +226,7 @@ impl TransformerModel {
             // when the kernel-batched path actually reads N streams' worth
             // of hidden at once; today each stream's layer-loop consumes
             // offset 0 before the next stream overwrites it.)
-            self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, stream)?;
+            self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, buffers, stream)?;
 
             // Phase 2: prefix-cache + EP-sync + Marconi.
             let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
@@ -253,6 +262,7 @@ impl TransformerModel {
                     is_last_chunk,
                     kv_write_start,
                     marconi_skip,
+                    buffers,
                     stream,
                 )? {
                 ProcRange::Compute {
@@ -282,6 +292,7 @@ impl TransformerModel {
                 proc_count,
                 effective_seq_len_start,
                 &kv_cache,
+                buffers,
                 stream,
             )?;
 
@@ -319,6 +330,7 @@ impl TransformerModel {
                 pos_stream_bytes,
                 use_mrope,
                 needs_paged,
+                buffers,
                 stream,
             )?;
 
@@ -335,6 +347,7 @@ impl TransformerModel {
                     chunk_start,
                     chunk_len,
                     proc_count,
+                    buffers,
                     stream,
                 )?
             } else {

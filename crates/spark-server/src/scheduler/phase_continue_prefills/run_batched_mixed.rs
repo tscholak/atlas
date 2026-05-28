@@ -81,12 +81,19 @@ pub(super) fn run_batched_mixed_step(
                 is_last_chunk: is_last_flags[i],
             })
             .collect();
-        model.mixed_forward_batch(
+        let lockprof_mixed_t0 = std::time::Instant::now();
+        let r = model.mixed_forward_batch(
             &decode_tokens,
             &mut decode_refs,
             &mut prefill_slices,
             prefill_stream,
-        )
+        );
+        tracing::info!(
+            target: "atlas::lockprof",
+            "phase_mixed n_decode={n_decode} n_prefill={n_prefill} model_call={:.2}ms",
+            lockprof_mixed_t0.elapsed().as_micros() as f64 / 1000.0,
+        );
+        r
     };
 
     let result = match result {

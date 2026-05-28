@@ -46,31 +46,11 @@ impl TransformerModel {
             return Ok(self.decode_logits_ptr());
         }
 
-        // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        // STREAM HAZARD: the original `stream` parameter is shadowed
-        // below to `default_stream`, because the n≥2 graph capture/
-        // replay must happen on a fixed stream. But the caller (see e.g.
-        // the default `mixed_forward_batch` impl in `traits/model.rs`)
-        // continues issuing GPU ops on its own `stream` parameter
-        // immediately after this function returns — writing to the same
-        // `self.buffers.*` singletons (hidden_states, residual, logits)
-        // that our queued work on default_stream is still using.
-        //
-        // `prefill_chunk_dispatch` (prefill_b.rs:71-77) respects the
-        // caller's stream; `decode_batch_dispatch` silently switches.
-        // Two streams + shared GPU buffers + no inter-stream sync
-        // = race + CUDA_ERROR_ILLEGAL_ADDRESS the moment the next
-        // caller op starts dispatching on the original stream while
-        // our decode kernels are still running on default_stream.
-        // This is the trigger for the
-        // `phase_continue_prefills::run_batched_mixed: Mixed-batch
-        // forward error (n_decode=N, n_prefill=M): cuMemcpyHtoDAsync_v2
-        // failed: status 700` crash on hybrid Mamba-MoE models.
-        //
-        // Preserve the caller's stream so we can post a cross-stream
-        // event handshake at exit (see the matching block before the
-        // `Ok(...)` return).
-        let caller_stream = stream;
+        // n≥2 decode runs graph capture/replay on default_stream. The
+        // caller's stream is ignored here: the secondary BufferArena
+        // (owned by prefill on non-default streams) gives prefill its
+        // own hidden/residual/scratch/logits, so decode on default_stream
+        // can't race the caller's continued work on its own stream.
         let stream = self.gpu.default_stream();
         let h = self.config.hidden_size;
         let bf16 = 2usize;
@@ -98,7 +78,9 @@ impl TransformerModel {
         }
 
         // 1c. Allocate KV blocks for active sequences
+        let lockprof_wait_t0 = std::time::Instant::now();
         let mut kv_cache = self.kv_cache.lock();
+        let lockprof_acquired = std::time::Instant::now();
         let bs = kv_cache.block_size();
         for seq in seqs.iter_mut() {
             let blocks_needed = (seq.seq_len / bs) + 1;
@@ -328,34 +310,14 @@ impl TransformerModel {
             seq.seq_len += 1;
         }
 
-        // Close the stream hazard described at the top of this function.
-        // The caller will start issuing ops on `caller_stream` as soon
-        // as we return; without this handshake, those ops race against
-        // our pending default_stream work on the shared GPU scratch
-        // buffers.
-        //
-        // GPU-side cross-stream event handshake: record our completion
-        // marker on `stream` (= default_stream) after all decode work is
-        // queued there, then have the caller's stream wait for it. The
-        // CPU never blocks, the GPU enforces the ordering, and decode
-        // and prefill can overlap on the GPU as much as their resource
-        // use allows.
-        //
-        // Uses a dedicated `decode_batch_done_event` (not
-        // `secondary_event`, which is owned by `async_chkpt`'s flow —
-        // that flow can interleave with this one inside the same
-        // forward tick, so sharing the handle would race two unrelated
-        // record/wait pairs).
-        //
-        // When the caller already passed `default_stream` (the
-        // decode-only fast path), the work is on the same stream they
-        // continue on and no extra sync is needed.
-        if caller_stream != stream {
-            self.gpu
-                .record_event(self.decode_batch_done_event, stream)?;
-            self.gpu
-                .stream_wait_event(caller_stream, self.decode_batch_done_event)?;
-        }
+        let lockprof_total = lockprof_acquired.elapsed();
+        let lockprof_wait = lockprof_acquired - lockprof_wait_t0;
+        tracing::info!(
+            target: "atlas::lockprof",
+            "decode_batch n={n} wait={:.2}ms held={:.2}ms",
+            lockprof_wait.as_micros() as f64 / 1000.0,
+            lockprof_total.as_micros() as f64 / 1000.0,
+        );
 
         Ok(self.decode_logits_ptr())
     }

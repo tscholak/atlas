@@ -36,6 +36,21 @@ pub struct TransformerModel {
     pub(super) lm_head_nvfp4: Option<QuantizedWeight>,
     pub(super) layers: Vec<Box<dyn TransformerLayer>>,
     pub(super) buffers: BufferArena,
+    /// Secondary scratch arena used by the prefill side of
+    /// `mixed_forward_batch`. With a single shared `buffers` arena,
+    /// `decode_batch_dispatch` (writing on `default_stream`) and the
+    /// subsequent `prefill_batch_chunk` call (writing on the caller's
+    /// stream) race on the same hidden_states/residual/logits/etc.
+    /// singletons inside the same mixed step, triggering
+    /// CUDA_ERROR_ILLEGAL_ADDRESS once enough chunks pile up.
+    /// Allocating a second arena gives the prefill side its own
+    /// scratch so the two halves can be queued on disjoint streams
+    /// with no inter-stream serialisation needed. Standalone callers
+    /// (single-prefill, no concurrent decode) continue to use
+    /// `buffers`; only `mixed_forward_batch`'s prefill side picks
+    /// the secondary arena, gated on the non-default-stream argument
+    /// inside `prefill_chunk_dispatch`.
+    pub(super) secondary_buffers: BufferArena,
     pub(super) kv_cache: Mutex<PagedKvCache>,
     pub(super) gpu: Box<dyn GpuBackend>,
     pub(super) rms_norm_kernel: KernelHandle,
@@ -124,20 +139,6 @@ pub struct TransformerModel {
     pub(super) secondary_stream: u64,
     /// CUDA event for GPU-side inter-stream synchronization (avoids CPU-blocking sync).
     pub(super) secondary_event: u64,
-    /// CUDA event for cross-stream sync at `decode_batch_dispatch` exit
-    /// (n>=2 non-EP path). That function silently shadows the caller's
-    /// stream with `default_stream` for graph-capture determinism, then
-    /// returns. The default `mixed_forward_batch` impl in
-    /// `traits/model.rs` continues issuing GPU ops on the caller's
-    /// stream against the same shared `self.buffers.*` singletons — a
-    /// cross-stream race without a handshake. Recording this event on
-    /// `default_stream` and having the caller's stream wait for it
-    /// closes the race on the GPU side without a CPU stall. Dedicated
-    /// to this use rather than reusing `secondary_event` because the
-    /// MTP / async-checkpoint flow (which owns secondary_event) can
-    /// interleave with `decode_batch_dispatch` inside the same forward
-    /// tick. See `trait_impl/decode_a2.rs` for the rationale.
-    pub(super) decode_batch_done_event: u64,
     /// Communication backend for expert parallelism (EP) all-reduce.
     /// None for single-GPU (no distributed communication needed).
     pub(super) comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,

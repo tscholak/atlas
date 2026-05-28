@@ -192,8 +192,13 @@ impl TransformerModel {
         // Stage h_state_ptrs[N] device array at the dedicated scratch offset
         // (caller computes this offset to avoid colliding with the
         // BatchedAttnMetadata staging at scratch[0..]).
-        let h_state_ptrs_dev =
-            self.stage_h_state_ptrs(layer_idx, seqs, h_state_ptrs_scratch_offset, stream)?;
+        let h_state_ptrs_dev = self.stage_h_state_ptrs(
+            layer_idx,
+            seqs,
+            h_state_ptrs_scratch_offset,
+            ctx.buffers,
+            stream,
+        )?;
 
         layer.prefill_gdn_full_batched(
             h_state_ptrs_dev,

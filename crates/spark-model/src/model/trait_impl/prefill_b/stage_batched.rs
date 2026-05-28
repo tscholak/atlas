@@ -71,6 +71,7 @@ impl TransformerModel {
         kv_cache: &PagedKvCache,
         use_mrope: bool,
         scratch_offset_bytes: usize,
+        buffers: &spark_runtime::buffers::BufferArena,
         stream: u64,
     ) -> Result<BatchedAttnMetadata> {
         let n = streams_info.len();
@@ -181,7 +182,7 @@ impl TransformerModel {
         // Single H2D copy of all metadata. The pinned-staging buffer holds
         // positions, MRoPE H/W (optional), slots, block_ptrs, seq_len_ptrs
         // packed contiguously. Upload to scratch at scratch_offset_bytes.
-        let scratch_base = self.buffers.scratch().offset(scratch_offset_bytes);
+        let scratch_base = buffers.scratch().offset(scratch_offset_bytes);
 
         // Host-side pack into pinned buffer at the correct relative offsets.
         let pinned = stg.ptr;

@@ -474,7 +474,7 @@ impl TransformerModel {
         )?;
 
         // ── 6. LM head on last token → logits ──
-        self.lm_head(normed, stream)?;
+        self.lm_head(normed, &self.buffers, stream)?;
 
         // ── 7. Update sequence state ──
         seq.tokens.extend_from_slice(tokens);

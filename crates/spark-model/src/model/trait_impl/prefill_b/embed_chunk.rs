@@ -6,6 +6,7 @@
 #![allow(unused_imports, dead_code, clippy::too_many_arguments)]
 
 use anyhow::Result;
+use spark_runtime::buffers::BufferArena;
 
 use super::super::super::types::TransformerModel;
 use crate::layers::ops;
@@ -16,11 +17,12 @@ impl TransformerModel {
         tokens: &[u32],
         chunk_start: usize,
         chunk_len: usize,
+        buffers: &BufferArena,
         stream: u64,
     ) -> Result<()> {
         // Single-stream entry point: write to the arena's hidden buffer at offset 0.
-        let hidden = self.buffers.hidden_states();
-        self.prefill_b_embed_chunk_at(tokens, chunk_start, chunk_len, hidden, stream)
+        let hidden = buffers.hidden_states();
+        self.prefill_b_embed_chunk_at(tokens, chunk_start, chunk_len, hidden, buffers, stream)
     }
 
     /// Embed `chunk_len` tokens into `hidden_dst` starting at position 0
@@ -34,6 +36,7 @@ impl TransformerModel {
         chunk_start: usize,
         chunk_len: usize,
         hidden_dst: spark_runtime::gpu::DevicePtr,
+        buffers: &BufferArena,
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
@@ -51,7 +54,7 @@ impl TransformerModel {
             let token_ids_bytes: &[u8] = unsafe {
                 std::slice::from_raw_parts(chunk_tokens.as_ptr() as *const u8, chunk_len * 4)
             };
-            let token_ids_dev = self.buffers.scratch(); // temporary, overwritten by MoE later
+            let token_ids_dev = buffers.scratch(); // temporary, overwritten by MoE later
             self.gpu
                 .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
             ops::batched_embed(

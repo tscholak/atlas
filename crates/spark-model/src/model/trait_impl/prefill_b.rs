@@ -75,20 +75,32 @@ impl TransformerModel {
             stream
         };
 
+        // Pick the arena based on stream identity: decode runs on the
+        // default stream and owns `self.buffers`; mixed-batch prefill
+        // arrives on a non-default stream and uses `self.secondary_buffers`
+        // so its scratch/hidden/residual don't race the in-flight decode.
+        let buffers = if stream != self.gpu.default_stream() {
+            &self.secondary_buffers
+        } else {
+            &self.buffers
+        };
+
         // EP=2: zero ALL buffers on every chunk (NCCL defense-in-depth).
         // EP=1, first chunk (chunk_start==0): zero essentials (stale data from prior request).
         // EP=1, subsequent chunks: skip zeroing — buffers are overwritten by embedding
         // + layer forward before read. Saves 7 memsets × (chunks-1) per prefill.
         if self.comm.is_some() {
-            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            buffers.zero_all(self.gpu.as_ref(), stream)?;
         } else if chunk_start == 0 {
-            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
+        let lockprof_wait_t0 = std::time::Instant::now();
         let mut kv_cache = self.kv_cache.lock();
+        let lockprof_acquired = std::time::Instant::now();
 
         // ── Phase 1+1b: embed chunk + vision pad overlay ──
-        self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, stream)?;
+        self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, buffers, stream)?;
 
         // ── Phase 2: prefix-cache lookup + EP sync + Marconi snapshot restore ──
         let (kv_write_start, marconi_skip) =
@@ -116,6 +128,7 @@ impl TransformerModel {
             is_last_chunk,
             kv_write_start,
             marconi_skip,
+            buffers,
             stream,
         )? {
             proc_range::ProcRange::Compute {
@@ -142,6 +155,7 @@ impl TransformerModel {
             proc_count,
             effective_seq_len_start,
             &kv_cache,
+            buffers,
             stream,
         )?;
 
@@ -182,6 +196,7 @@ impl TransformerModel {
             pos_stream_bytes,
             use_mrope,
             needs_paged,
+            buffers,
             stream,
         )?;
 
@@ -193,7 +208,7 @@ impl TransformerModel {
             .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
         seq.seq_len = chunk_start + chunk_len;
 
-        if is_last_chunk {
+        let result = if is_last_chunk {
             // ── Phase 6+7+8: final norm, lm_head, prefix-cache + snapshot save ──
             self.prefill_b_finalize_last(
                 tokens,
@@ -202,6 +217,7 @@ impl TransformerModel {
                 chunk_start,
                 chunk_len,
                 proc_count,
+                buffers,
                 stream,
             )
         } else {
@@ -213,8 +229,18 @@ impl TransformerModel {
                 chunk_start,
                 chunk_len,
                 stream,
-            )?;
-            Ok(DevicePtr::NULL)
-        }
+            )
+            .map(|_| DevicePtr::NULL)
+        };
+
+        let lockprof_total = lockprof_acquired.elapsed();
+        let lockprof_wait = lockprof_acquired - lockprof_wait_t0;
+        tracing::info!(
+            target: "atlas::lockprof",
+            "prefill_chunk chunk_len={chunk_len} is_last={is_last_chunk} wait={:.2}ms held={:.2}ms",
+            lockprof_wait.as_micros() as f64 / 1000.0,
+            lockprof_total.as_micros() as f64 / 1000.0,
+        );
+        result
     }
 }

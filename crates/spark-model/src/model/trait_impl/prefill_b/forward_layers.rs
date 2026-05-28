@@ -13,6 +13,7 @@ use spark_runtime::kv_cache::PagedKvCache;
 use super::super::super::types::TransformerModel;
 use crate::layer::{AttnMetadataDev, ForwardContext};
 use crate::traits::SequenceState;
+use spark_runtime::buffers::BufferArena;
 
 impl TransformerModel {
     pub(super) fn prefill_b_forward_layers(
@@ -31,6 +32,7 @@ impl TransformerModel {
         pos_stream_bytes: usize,
         use_mrope: bool,
         needs_paged: bool,
+        buffers: &BufferArena,
         stream: u64,
     ) -> Result<()> {
         let h = self.config.hidden_size;
@@ -39,8 +41,8 @@ impl TransformerModel {
         } else {
             2usize
         };
-        let hidden = self.buffers.hidden_states();
-        let residual = self.buffers.residual();
+        let hidden = buffers.hidden_states();
+        let residual = buffers.residual();
 
         let (block_table_dev, seq_len_dev) = if needs_paged {
             let page_meta = seq.chunked_prefill_meta.as_ref().unwrap();
@@ -75,7 +77,7 @@ impl TransformerModel {
                 .swap(false, std::sync::atomic::Ordering::Relaxed);
 
         let ctx = ForwardContext {
-            buffers: &self.buffers,
+            buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             attn_metadata: Some(attn_metadata),

@@ -150,16 +150,26 @@ impl TransformerModel {
             stream
         };
 
+        // Pick arena based on stream identity — see prefill_chunk_dispatch
+        // for rationale. Kernel-batched path is currently SSM-disabled,
+        // but we still respect the arena split for non-SSM models so that
+        // mixed-batch dispatch can run prefill in parallel with decode.
+        let buffers = if stream != self.gpu.default_stream() {
+            &self.secondary_buffers
+        } else {
+            &self.buffers
+        };
+
         // Lock KV cache once.
         let mut kv_cache = self.kv_cache.lock();
 
         // Zero shared buffers once (instead of N times in per-stream).
         if self.comm.is_some() || streams[0].chunk_start == 0 {
-            self.buffers.zero_all(self.gpu.as_ref(), stream)?;
+            buffers.zero_all(self.gpu.as_ref(), stream)?;
         }
 
-        let hidden_base = self.buffers.hidden_states();
-        let _residual_base = self.buffers.residual();
+        let hidden_base = buffers.hidden_states();
+        let _residual_base = buffers.residual();
 
         // ── PHASE A: per-stream Phase 1-3 setup at stacked offsets ──
         //
@@ -202,7 +212,14 @@ impl TransformerModel {
 
             // Embed at b*chunk_len*H offset into shared hidden buffer.
             let hidden_b = hidden_base.offset(b * chunk_len * h * dtype_bytes);
-            self.prefill_b_embed_chunk_at(tokens, chunk_start, chunk_len, hidden_b, stream)?;
+            self.prefill_b_embed_chunk_at(
+                tokens,
+                chunk_start,
+                chunk_len,
+                hidden_b,
+                buffers,
+                stream,
+            )?;
 
             // Prefix-cache lookup, EP-sync, Marconi restore.
             let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
@@ -237,6 +254,7 @@ impl TransformerModel {
                     is_last_chunk,
                     kv_write_start,
                     marconi_skip,
+                    buffers,
                     stream,
                 )? {
                 ProcRange::Compute {
@@ -273,7 +291,7 @@ impl TransformerModel {
             }
 
             // Per-stream meta upload to distinct scratch slice.
-            let meta_base = self.buffers.scratch().offset(scratch_cursor);
+            let meta_base = buffers.scratch().offset(scratch_cursor);
             let layout = self.prefill_b_upload_meta_at(
                 tokens,
                 seq,
@@ -366,6 +384,7 @@ impl TransformerModel {
             &kv_cache,
             use_mrope,
             scratch_cursor,
+            buffers,
             stream,
         )?;
         // Advance cursor past the staged BatchedAttnMetadata. Generous
@@ -380,7 +399,7 @@ impl TransformerModel {
         // per-stream meta blocks + stacked BatchedAttnMetadata; bail if
         // we'd exceed scratch capacity rather than overrun into another
         // buffer.
-        let scratch_bytes = self.buffers.sizes().scratch;
+        let scratch_bytes = buffers.sizes().scratch;
         let projected_usage = scratch_cursor + (n * std::mem::size_of::<u64>());
         if projected_usage > scratch_bytes {
             anyhow::bail!(
@@ -405,7 +424,7 @@ impl TransformerModel {
         // intentionally None — layers read BatchedAttnMetadata directly
         // through the model-level dispatcher arguments.
         let ctx = ForwardContext {
-            buffers: &self.buffers,
+            buffers,
             gpu: self.gpu.as_ref(),
             config: &self.config,
             attn_metadata: None,
@@ -481,6 +500,7 @@ impl TransformerModel {
                     chunk_len,
                     m.proc_count,
                     b * chunk_len,
+                    buffers,
                     stream,
                 )?
             } else {

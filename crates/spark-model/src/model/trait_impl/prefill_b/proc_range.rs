@@ -34,10 +34,11 @@ impl TransformerModel {
         is_last_chunk: bool,
         kv_write_start: usize,
         marconi_skip: bool,
+        buffers: &spark_runtime::buffers::BufferArena,
         stream: u64,
     ) -> Result<ProcRange> {
         let h = self.config.hidden_size;
-        let hidden = self.buffers.hidden_states();
+        let hidden = buffers.hidden_states();
 
         if marconi_skip && kv_write_start > chunk_start {
             // Skip cached tokens within this chunk
@@ -53,7 +54,7 @@ impl TransformerModel {
                     let last_tok_bytes: &[u8] = unsafe {
                         std::slice::from_raw_parts(&last_tok as *const u32 as *const u8, 4)
                     };
-                    let token_id_dev = self.buffers.scratch();
+                    let token_id_dev = buffers.scratch();
                     self.gpu
                         .copy_h2d_async(last_tok_bytes, token_id_dev, stream)?;
                     ops::batched_embed(
@@ -86,7 +87,7 @@ impl TransformerModel {
                         uncached_count * 4,
                     )
                 };
-                let token_ids_dev = self.buffers.scratch();
+                let token_ids_dev = buffers.scratch();
                 self.gpu
                     .copy_h2d_async(token_ids_bytes, token_ids_dev, stream)?;
                 ops::batched_embed(
