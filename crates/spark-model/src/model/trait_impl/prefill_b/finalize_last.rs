@@ -97,7 +97,7 @@ impl TransformerModel {
         }
 
         // ── 7. LM head on last token → logits ──
-        self.lm_head(normed, buffers, stream)?;
+        let logits_ptr = self.lm_head(normed, buffers, stream)?;
 
         // Diagnostic: logits stats
         if (chunk_start + chunk_len) > 16384
@@ -215,6 +215,11 @@ impl TransformerModel {
         // DFlash: advance ctx_len after the LAST chunk of chunked prefill.
         self.update_dflash_ctx_len_after_prefill(seq, chunk_start, chunk_len)?;
 
-        Ok(self.decode_logits_ptr())
+        // Return what lm_head actually wrote to. For mixed-batch prefill on
+        // a non-default stream, `buffers` is `secondary_buffers`, so the
+        // sampler must read from `secondary_buffers.logits()` — NOT
+        // `self.decode_logits_ptr()` which hardcodes the primary arena and
+        // would alias decode's logits buffer.
+        Ok(logits_ptr)
     }
 }
