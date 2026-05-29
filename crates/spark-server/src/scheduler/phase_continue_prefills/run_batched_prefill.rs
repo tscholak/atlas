@@ -14,6 +14,7 @@ use spark_model::traits::{Model, PrefillSlice};
 use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
+use super::super::helpers::log_logits_top5;
 use super::super::sample_token;
 use super::super::types::PrefillInProgress;
 
@@ -111,6 +112,7 @@ pub(super) fn run_batched_prefill_step(
             completed_indices.push((i, None));
             continue;
         }
+        log_logits_top5(model, logits, &format!("batched_prefill[i={i}/{n}]"));
         match sample_token(
             model,
             logits,

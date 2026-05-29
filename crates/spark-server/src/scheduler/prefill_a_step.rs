@@ -173,6 +173,7 @@ pub fn start_chunked_prefill(
 
     if is_last {
         // Single chunk covered the entire prompt — get first token.
+        log_logits_top5(model, logits, "start_chunked_prefill");
         let first = match sample_token(model, logits, temperature, top_k, top_p, eos_tokens) {
             Ok(t) => {
                 tracing::info!("Prefill first token: {t}");

@@ -8,6 +8,50 @@ pub fn bf16_to_f32(lo: u8, hi: u8) -> f32 {
     f32::from_bits(((lo as u32) | ((hi as u32) << 8)) << 16)
 }
 
+/// Diagnostic: D2H-copy a logits buffer, extract top-5 tokens, log under
+/// `atlas::lockprof`. Used to verify whether two streams' first-token
+/// samples are reading the same memory (alias) vs reading distinct logits.
+///
+/// `label` is a short identifier embedded in the log line. Silent at
+/// default RUST_LOG; enable with `RUST_LOG="info,atlas::lockprof=info"`.
+///
+/// Cost: one D2H copy of `vocab_size * 2` bytes (≈300 KB for Qwen3.6) plus
+/// a single-pass partial sort. Adds ~1 ms per call on the Spark. Off the
+/// hot path (only called from prefill first-token sample sites and the
+/// first few decode ticks).
+pub fn log_logits_top5(
+    model: &dyn spark_model::traits::Model,
+    logits: spark_runtime::gpu::DevicePtr,
+    label: &str,
+) {
+    let vocab = model.vocab_size();
+    let mut buf = vec![0u8; vocab * 2];
+    if model.copy_logits_to_host(logits, &mut buf).is_err() {
+        tracing::info!(
+            target: "atlas::lockprof",
+            "logits_top5 {label}: copy_logits_to_host failed (ptr=0x{:x})",
+            logits.0,
+        );
+        return;
+    }
+    let mut vals: Vec<(usize, f32)> = (0..vocab)
+        .map(|i| (i, bf16_to_f32(buf[i * 2], buf[i * 2 + 1])))
+        .collect();
+    vals.select_nth_unstable_by(5.min(vocab.saturating_sub(1)), |a, b| {
+        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut top5: Vec<(usize, f32)> = vals.into_iter().take(5).collect();
+    top5.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let nan_count = (0..vocab)
+        .filter(|&i| bf16_to_f32(buf[i * 2], buf[i * 2 + 1]).is_nan())
+        .count();
+    tracing::info!(
+        target: "atlas::lockprof",
+        "logits_top5 {label} ptr=0x{:x} nan_count={nan_count} top5={top5:?}",
+        logits.0,
+    );
+}
+
 /// Global hard-stop token for ChatML role boundaries (`<|im_start|>`).
 ///
 /// Set once at startup from `main.rs::set_im_start_hard_stop` when the

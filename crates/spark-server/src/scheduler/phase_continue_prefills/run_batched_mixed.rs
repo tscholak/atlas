@@ -17,6 +17,7 @@ use spark_runtime::gpu::DevicePtr;
 use std::time::Instant;
 
 use super::super::decode_logits_step::process_decode_logits;
+use super::super::helpers::log_logits_top5;
 use super::super::sample_token;
 use super::super::types::{ActiveSeq, PrefillInProgress};
 
@@ -128,6 +129,7 @@ pub(super) fn run_batched_mixed_step(
             completed_indices.push((i, None));
             continue;
         }
+        log_logits_top5(model, logits, &format!("mixed_batch[i={i}/{n_prefill}]"));
         match sample_token(
             model,
             logits,
