@@ -84,7 +84,7 @@ pub fn process_decode_logits(
             // iteration owns a disjoint `&mut ActiveSeq` and reads a disjoint
             // slice of `buf`; the model reference and reflection_suppress_ids
             // are shared `&_`. At N=4 this collapses ~25 ms sequential into
-            // a single ~6 ms parallel pass (per-tick savings ~19 ms).
+            // a single ~11 ms parallel pass.
             let r: Vec<(u32, Option<crate::api::TokenLogprobs>)> = active
                 .par_iter_mut()
                 .enumerate()

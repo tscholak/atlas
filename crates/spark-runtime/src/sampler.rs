@@ -5,22 +5,50 @@
 //! Phase 1: Greedy argmax (CPU-side D2H + argmax).
 //! Future: temperature, top-k, top-p, min-p, repetition penalty.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::gpu::{DevicePtr, GpuBackend};
 use anyhow::Result;
 
 // ── Global entropy tracking ──
-// Stores the latest per-token entropy and counts of low-entropy streaks.
+// `LAST_ENTROPY` + the LOW_ENTROPY / TOTAL counts are process-global stats
+// surfaced through the monitoring HTTP API. They reflect "any thread's last
+// sample" and the all-thread totals — both fine semantics for monitoring.
 // AtomicU32 stores f32 bits for lock-free reads.
 
 static LAST_ENTROPY: AtomicU32 = AtomicU32::new(0);
 static LOW_ENTROPY_TOKENS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_SAMPLED_TOKENS: AtomicU64 = AtomicU64::new(0);
 
-/// Read the most recent per-token entropy (nats).
+// ── Per-thread entropy ──
+// The scheduler's entropy-collapse guard MUST read the entropy of the
+// just-sampled distribution for the SAME sequence. With the rayon-parallel
+// sampling in process_decode_logits, the global `LAST_ENTROPY` races: a
+// worker writes its sample's entropy and a concurrent worker overwrites it
+// before the first reads back, surfacing as false entropy-collapse
+// triggers and pathological 2/17-token early stops. The thread-local
+// version is written by `record_entropy` on the sampling worker and read
+// by the entropy-collapse guard on the same worker, so the read always
+// observes the most recent same-thread write.
+thread_local! {
+    static THREAD_LAST_ENTROPY: Cell<f32> = const { Cell::new(0.0) };
+}
+
+/// Process-global "any thread's last sampled entropy" (nats). Intended for
+/// monitoring/status endpoints; under parallel sampling the value belongs
+/// to whichever worker most recently called `record_entropy`, not to any
+/// specific sequence. Use [`last_sample_entropy`] for per-sequence reads.
 pub fn last_entropy() -> f32 {
     f32::from_bits(LAST_ENTROPY.load(Ordering::Relaxed))
+}
+
+/// Per-thread last sampled entropy (nats). Updated by `record_entropy` on
+/// the same thread; read by the scheduler's entropy-collapse guard so the
+/// value reliably belongs to the just-sampled sequence even under
+/// rayon-parallel sampling.
+pub fn last_sample_entropy() -> f32 {
+    THREAD_LAST_ENTROPY.with(|c| c.get())
 }
 
 /// Total tokens with entropy < 0.3 (potential degeneration).
@@ -34,6 +62,7 @@ pub fn total_sampled_token_count() -> u64 {
 }
 
 pub(super) fn record_entropy(entropy: f32) {
+    THREAD_LAST_ENTROPY.with(|c| c.set(entropy));
     LAST_ENTROPY.store(entropy.to_bits(), Ordering::Relaxed);
     TOTAL_SAMPLED_TOKENS.fetch_add(1, Ordering::Relaxed);
     if entropy < 0.3 {

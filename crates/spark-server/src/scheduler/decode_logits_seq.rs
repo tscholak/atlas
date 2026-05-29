@@ -318,7 +318,10 @@ pub fn process_seq_logits(
         || a.grammar_state.is_some())
         && a.output_tokens.len() >= ENTROPY_COLLAPSE_WARMUP_TOKENS
     {
-        let h = spark_runtime::sampler::last_entropy();
+        // Per-thread last entropy, not the global. Under rayon-parallel
+        // sampling the global races; the per-thread value reliably belongs
+        // to the just-sampled sequence on this worker.
+        let h = spark_runtime::sampler::last_sample_entropy();
         if h < ENTROPY_COLLAPSE_THRESHOLD_NATS {
             a.entropy_collapse_streak = a.entropy_collapse_streak.saturating_add(1);
             #[allow(clippy::absurd_extreme_comparisons)]
