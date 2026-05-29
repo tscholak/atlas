@@ -156,6 +156,19 @@ impl BufferArena {
     pub fn logits(&self) -> DevicePtr {
         self.logits
     }
+    /// How many `vocab_size`-sized slots fit in the logits buffer. The
+    /// buffer is sized for `min(max_batch_tokens, 32)` slots — see
+    /// `BufferSizes::from_config` — to cover decode (1 token), batched
+    /// decode (≤8), spec verify (≤17 for DFlash K=γ), and multi-is_last
+    /// mixed-batch prefill. `bytes_per_slot` is `vocab_size *
+    /// elem_bytes` where elem_bytes is 2 for BF16 logits or 4 for the
+    /// FP32 logits path (Gemma-4 family).
+    pub fn logits_slot_capacity(&self, bytes_per_slot: usize) -> usize {
+        if bytes_per_slot == 0 {
+            return 0;
+        }
+        self.sizes.logits / bytes_per_slot
+    }
     pub fn ssm_qkvz(&self) -> DevicePtr {
         self.ssm_qkvz
     }

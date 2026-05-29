@@ -67,7 +67,7 @@ impl TransformerModel {
             eps,
             stream,
         )?;
-        self.lm_head(normed, &self.buffers, stream)?;
+        self.lm_head(normed, &self.buffers, 0, stream)?;
         // Prefix cache insert (no new snapshot needed — SSM state unchanged).
         if !self.tokens_have_vision_pad(tokens) {
             let acquired = self.prefix_cache.insert(

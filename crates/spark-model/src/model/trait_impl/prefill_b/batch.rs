@@ -203,6 +203,44 @@ impl TransformerModel {
         // Lock KV cache once for the whole batched dispatch.
         let mut kv_cache = self.kv_cache.lock();
 
+        // Multi-is_last_chunk slot allocation. Each `prefill_b_finalize_last`
+        // call writes its lm_head output to `buffers.logits()` at a
+        // per-stream offset, so concurrent is_last prefills don't all alias
+        // slot 0 and end up reading the same sampled tokens.
+        let is_last_count = streams.iter().filter(|s| s.is_last_chunk).count();
+        if is_last_count >= 2 {
+            tracing::info!(
+                target: "atlas::lockprof",
+                "prefill_batch_chunk_dispatch is_last_count={} n_streams={}",
+                is_last_count,
+                n,
+            );
+            // FP32 logits (Gemma-4 family): the FP32 logits buffer is
+            // single-slot and not part of the BufferArena, so we can't
+            // offset within it. We don't run Gemma in production; refuse
+            // the path here so the scheduler can fall back to per-tick
+            // serialisation rather than corrupt samples.
+            if self.use_fp32_logits {
+                anyhow::bail!(
+                    "prefill_batch_chunk_dispatch: {is_last_count} concurrent \
+                     is_last prefills on an FP32-logits model — single-slot \
+                     `logits_fp32_buf` cannot be sliced. Fall back to single-stream."
+                );
+            }
+            // BF16 path: ensure the arena's logits buffer has enough slots.
+            let bytes_per_slot = self.config.vocab_size * 2;
+            let cap = buffers.logits_slot_capacity(bytes_per_slot);
+            if is_last_count > cap {
+                anyhow::bail!(
+                    "prefill_batch_chunk_dispatch: is_last_count={is_last_count} \
+                     exceeds logits buffer slot capacity {cap}. Reduce \
+                     --max-batch-size or rebuild with larger `logits_tokens` in \
+                     `BufferSizes::from_config`."
+                );
+            }
+        }
+        let mut is_last_slot: usize = 0;
+
         let mut logits_out: Vec<DevicePtr> = Vec::with_capacity(n);
 
         for slice in streams.iter_mut() {
@@ -340,6 +378,8 @@ impl TransformerModel {
             seq.seq_len = chunk_start + chunk_len;
 
             let logits = if is_last_chunk {
+                let slot = is_last_slot;
+                is_last_slot += 1;
                 self.prefill_b_finalize_last(
                     tokens,
                     seq,
@@ -347,6 +387,7 @@ impl TransformerModel {
                     chunk_start,
                     chunk_len,
                     proc_count,
+                    slot,
                     buffers,
                     stream,
                 )?

@@ -204,10 +204,19 @@ impl TransformerModel {
     /// Decode/standalone-prefill callers pass `&self.buffers`; the mixed-
     /// batch prefill side passes `&self.secondary_buffers` so it doesn't
     /// race a concurrent decode on the primary arena.
+    ///
+    /// `slot_idx` selects which token-slot in `buffers.logits()` to write
+    /// (the buffer is sized for up to 32 slots — see
+    /// `crates/spark-runtime/src/buffers/sizes.rs::logits_tokens`). All
+    /// existing single-token paths pass `0`; only `prefill_batch_chunk_dispatch`
+    /// passes a non-zero index when multiple concurrent prefill streams hit
+    /// `is_last_chunk` in the same mixed-batch call, so each stream's logits
+    /// land in a distinct slot rather than aliasing slot 0.
     pub(super) fn lm_head(
         &self,
         hidden: DevicePtr,
         buffers: &spark_runtime::buffers::BufferArena,
+        slot_idx: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
         let h = self.config.hidden_size as u32;
@@ -215,11 +224,17 @@ impl TransformerModel {
         // Pick the output buffer: FP32 scratch when use_fp32_logits is on,
         // shared BF16 buffer otherwise. The sampler must use the matching
         // dtype — see `decode_logits_dtype()`.
-        let (logits, fp32) = if self.use_fp32_logits {
+        let (base, fp32) = if self.use_fp32_logits {
             (self.logits_fp32_buf, true)
         } else {
             (buffers.logits(), false)
         };
+        // Offset by slot_idx slots. BF16 path: 2 bytes/element; FP32 path:
+        // 4 bytes/element. Callers that pass non-zero slot_idx are
+        // responsible for bounds-checking against the buffer's slot
+        // capacity (see `prefill_batch_chunk_dispatch`).
+        let bytes_per_slot = (v as usize) * if fp32 { 4 } else { 2 };
+        let logits = base.offset(slot_idx * bytes_per_slot);
         if let Some(ref nvfp4) = self.lm_head_nvfp4 {
             // Pick FP32-output variant when the FP32 logits buffer is the
             // destination. Same packed-NVFP4 weights, same activation, but the

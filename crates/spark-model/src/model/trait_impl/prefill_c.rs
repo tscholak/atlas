@@ -502,7 +502,7 @@ impl TransformerModel {
         )?;
 
         // ── 7. LM head on last token → logits ──
-        self.lm_head(normed, &self.buffers, stream)?;
+        self.lm_head(normed, &self.buffers, 0, stream)?;
 
         // ── 8. Insert into prefix cache + Marconi snapshot ──
         self.prefill_save_snapshot_and_insert(tokens, seq, &mut kv_cache, bs, stream);

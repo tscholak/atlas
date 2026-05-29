@@ -210,6 +210,7 @@ impl TransformerModel {
 
         let result = if is_last_chunk {
             // ── Phase 6+7+8: final norm, lm_head, prefix-cache + snapshot save ──
+            // Single-stream dispatch: write logits to slot 0.
             self.prefill_b_finalize_last(
                 tokens,
                 seq,
@@ -217,6 +218,7 @@ impl TransformerModel {
                 chunk_start,
                 chunk_len,
                 proc_count,
+                0,
                 buffers,
                 stream,
             )

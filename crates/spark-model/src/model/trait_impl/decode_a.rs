@@ -231,7 +231,7 @@ impl TransformerModel {
         )?;
 
         // LM head reads from normed directly (no D2D copy needed)
-        self.lm_head(normed, &self.buffers, stream)?;
+        self.lm_head(normed, &self.buffers, 0, stream)?;
 
         // Decode-step diagnostic for Gemma-4 degeneration analysis. Only fires
         // when ATLAS_DIAG_GEMMA4=1 (which also disables CUDA graphs upstream,

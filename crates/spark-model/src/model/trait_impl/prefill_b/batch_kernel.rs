@@ -492,6 +492,11 @@ impl TransformerModel {
             seq.seq_len = chunk_start + chunk_len;
 
             let logits = if is_last_chunk {
+                // Q12 kernel-batched path: per-stream `b` is also the
+                // logits slot index, mirroring the per-stream hidden
+                // offset (`b * chunk_len`). is_last_chunk is the same
+                // for every stream in this dispatch (eligibility gate),
+                // so all N streams will write distinct slots 0..N-1.
                 self.prefill_b_finalize_last_at(
                     tokens,
                     seq,
@@ -500,6 +505,7 @@ impl TransformerModel {
                     chunk_len,
                     m.proc_count,
                     b * chunk_len,
+                    b,
                     buffers,
                     stream,
                 )?

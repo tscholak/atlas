@@ -26,6 +26,7 @@ impl TransformerModel {
         chunk_start: usize,
         chunk_len: usize,
         proc_count: usize,
+        logits_slot_idx: usize,
         buffers: &spark_runtime::buffers::BufferArena,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -37,6 +38,7 @@ impl TransformerModel {
             chunk_len,
             proc_count,
             0,
+            logits_slot_idx,
             buffers,
             stream,
         )
@@ -45,7 +47,9 @@ impl TransformerModel {
     /// Q12 Path B: stream-offset-aware finalize for the kernel-batched
     /// orchestrator. `hidden_stream_offset_tokens` is `b * chunk_len`
     /// where `b` is the stream's index in the batched dispatch.
-    /// All other args identical to `prefill_b_finalize_last`.
+    /// `logits_slot_idx` is the destination slot in `buffers.logits()` —
+    /// non-zero only when multiple concurrent is_last_chunk prefill streams
+    /// are batched into the same dispatch (see `prefill_batch_chunk_dispatch`).
     pub(in crate::model) fn prefill_b_finalize_last_at(
         &self,
         tokens: &[u32],
@@ -55,6 +59,7 @@ impl TransformerModel {
         chunk_len: usize,
         proc_count: usize,
         hidden_stream_offset_tokens: usize,
+        logits_slot_idx: usize,
         buffers: &spark_runtime::buffers::BufferArena,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -97,14 +102,13 @@ impl TransformerModel {
         }
 
         // ── 7. LM head on last token → logits ──
-        let logits_ptr = self.lm_head(normed, buffers, stream)?;
+        let logits_ptr = self.lm_head(normed, buffers, logits_slot_idx, stream)?;
 
-        // Diagnostic: logits stats
+        // Diagnostic: logits stats — read from the actual slot lm_head wrote to.
         if (chunk_start + chunk_len) > 16384
             || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")
         {
             self.gpu.synchronize(stream)?;
-            let logits_ptr = buffers.logits();
             let n_logits = self.config.vocab_size;
             let mut buf = vec![0u8; n_logits * 2];
             self.gpu.copy_d2h(logits_ptr, &mut buf)?;
