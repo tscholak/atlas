@@ -103,7 +103,7 @@ impl TransformerModel {
         self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, buffers, stream)?;
 
         // ── Phase 2: prefix-cache lookup + EP sync + Marconi snapshot restore ──
-        let (kv_write_start, marconi_skip) =
+        let (kv_write_start, marconi_skip, cached_hidden) =
             self.prefill_b_prefix_lookup(tokens, seq, chunk_start, total, &mut kv_cache, stream)?;
 
         // Allocate blocks needed through end of this chunk.
@@ -128,6 +128,7 @@ impl TransformerModel {
             is_last_chunk,
             kv_write_start,
             marconi_skip,
+            cached_hidden,
             buffers,
             stream,
         )? {
@@ -137,6 +138,44 @@ impl TransformerModel {
                 effective_seq_len_start,
             } => (proc_start, proc_count, effective_seq_len_start),
             proc_range::ProcRange::EarlyReturn(ptr) => return Ok(ptr),
+            proc_range::ProcRange::CachedHidden(hidden_ptr) => {
+                // Option #5: warm-cache full match. Skip Phase 3+4 entirely
+                // and call `lm_head` directly on the cached post-LN hidden
+                // state. seq_len was already bumped by proc_range. We do
+                // NOT touch the prefix cache or snapshot pool: the matching
+                // entry is already there (lookup did the inc_refs), and
+                // re-saving would either be a no-op or — worse — drift the
+                // snapshot. We also do NOT re-extend seq.tokens because
+                // the warm-cache iter does not append new tokens to the
+                // model's view of the sequence here; the scheduler appends
+                // the SAMPLED first token to `seq.tokens` after this call
+                // returns (same as the normal finalize_last path).
+                seq.tokens
+                    .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
+                let prompt_hash = {
+                    let mut h: u64 = 0xcbf29ce484222325;
+                    for &t in tokens.iter().take(32) {
+                        h ^= t as u64;
+                        h = h.wrapping_mul(0x100000001b3);
+                    }
+                    h
+                };
+                tracing::info!(
+                    target: "atlas::lockprof",
+                    "prefill_chunk CACHED_HIDDEN_FAST_PATH chunk_len={chunk_len} \
+                     prompt_hash32=0x{prompt_hash:x}",
+                );
+                let logits_ptr = self.lm_head(hidden_ptr, buffers, 0, stream)?;
+                let lockprof_total = lockprof_acquired.elapsed();
+                let lockprof_wait = lockprof_acquired - lockprof_wait_t0;
+                tracing::info!(
+                    target: "atlas::lockprof",
+                    "prefill_chunk chunk_len={chunk_len} is_last={is_last_chunk} wait={:.2}ms held={:.2}ms (cached_hidden)",
+                    lockprof_wait.as_micros() as f64 / 1000.0,
+                    lockprof_total.as_micros() as f64 / 1000.0,
+                );
+                return Ok(logits_ptr);
+            }
         };
 
         // ── Phase 3: upload positions + MRoPE + slot metadata ──

@@ -505,7 +505,7 @@ impl TransformerModel {
         self.lm_head(normed, &self.buffers, 0, stream)?;
 
         // ── 8. Insert into prefix cache + Marconi snapshot ──
-        self.prefill_save_snapshot_and_insert(tokens, seq, &mut kv_cache, bs, stream);
+        self.prefill_save_snapshot_and_insert(tokens, seq, &mut kv_cache, bs, normed, stream);
 
         Ok(self.decode_logits_ptr())
     }

@@ -22,6 +22,13 @@ pub(in crate::model) enum ProcRange {
     },
     /// Whole chunk cached and not last — caller returns immediately.
     EarlyReturn(DevicePtr),
+    /// Last chunk + full-prompt warm-cache hit + cached pre-`lm_head`
+    /// hidden state available. The caller skips Phase 3/4 entirely and
+    /// feeds this pointer (the post-final-RMS-norm `lm_head` input from
+    /// the cold prefill) directly into `lm_head`. This is the option-#5
+    /// path that fixes the 1-step state-advance drift documented in
+    /// `finalize_last.rs`'s `is_warm_cache_last_token` comment block.
+    CachedHidden(DevicePtr),
 }
 
 impl TransformerModel {
@@ -34,6 +41,7 @@ impl TransformerModel {
         is_last_chunk: bool,
         kv_write_start: usize,
         marconi_skip: bool,
+        cached_hidden: Option<DevicePtr>,
         buffers: &spark_runtime::buffers::BufferArena,
         stream: u64,
     ) -> Result<ProcRange> {
@@ -48,6 +56,15 @@ impl TransformerModel {
                 // Don't add tokens here; the normal path at step 5 handles it.
                 seq.seq_len = chunk_start + chunk_len;
                 if is_last_chunk {
+                    // Option-#5 fast path: if the snapshot also captured the
+                    // post-final-RMS-norm hidden state (full-prompt match),
+                    // hand it back so the dispatcher can call `lm_head`
+                    // directly. The 1-step-state-advance trap doesn't fire
+                    // because we never run the decode kernel on the last
+                    // token at all.
+                    if let Some(ptr) = cached_hidden {
+                        return Ok(ProcRange::CachedHidden(ptr));
+                    }
                     // Need to process at least the last token for logits.
                     // Re-embed just the last token into hidden[0].
                     let last_tok = tokens[chunk_start + chunk_len - 1];

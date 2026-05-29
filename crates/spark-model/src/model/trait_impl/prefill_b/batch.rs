@@ -267,7 +267,7 @@ impl TransformerModel {
             self.prefill_b_embed_chunk(tokens, chunk_start, chunk_len, buffers, stream)?;
 
             // Phase 2: prefix-cache + EP-sync + Marconi.
-            let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
+            let (kv_write_start, marconi_skip, cached_hidden) = self.prefill_b_prefix_lookup(
                 tokens,
                 seq,
                 chunk_start,
@@ -300,6 +300,7 @@ impl TransformerModel {
                     is_last_chunk,
                     kv_write_start,
                     marconi_skip,
+                    cached_hidden,
                     buffers,
                     stream,
                 )? {
@@ -310,6 +311,20 @@ impl TransformerModel {
                 } => (proc_start, proc_count, effective_seq_len_start),
                 ProcRange::EarlyReturn(ptr) => {
                     logits_out.push(ptr);
+                    continue;
+                }
+                ProcRange::CachedHidden(hidden_ptr) => {
+                    // Option-#5 fast path in batched dispatch. Append
+                    // tokens to seq state (no Phase 4) and call lm_head
+                    // with this stream's per-stream logits slot, then
+                    // skip to the next stream.
+                    seq.tokens
+                        .extend_from_slice(&tokens[chunk_start..chunk_start + chunk_len]);
+                    seq.seq_len = chunk_start + chunk_len;
+                    let slot = is_last_slot;
+                    is_last_slot += 1;
+                    let logits_ptr = self.lm_head(hidden_ptr, buffers, slot, stream)?;
+                    logits_out.push(logits_ptr);
                     continue;
                 }
             };

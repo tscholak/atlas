@@ -13,6 +13,12 @@ use super::super::super::types::TransformerModel;
 use crate::traits::SequenceState;
 
 impl TransformerModel {
+    /// Returns `(kv_write_start, marconi_skip, cached_hidden_ptr)`. The
+    /// third element is `Some(ptr)` only when the snapshot covers the
+    /// FULL prompt (`ssm_snapshot_tokens == matched == total`), in which
+    /// case the proc_range layer can take a fast path that skips Phase 4
+    /// entirely and feeds `ptr` directly into `lm_head`. See option-#5
+    /// writeup in `docs/atlas-bug-mixed-batch-illegal-address.md`.
     pub(in crate::model) fn prefill_b_prefix_lookup(
         &self,
         tokens: &[u32],
@@ -21,7 +27,7 @@ impl TransformerModel {
         total: usize,
         kv_cache: &mut PagedKvCache,
         stream: u64,
-    ) -> Result<(usize, bool)> {
+    ) -> Result<(usize, bool, Option<spark_runtime::gpu::DevicePtr>)> {
         let bs = kv_cache.block_size();
         if chunk_start == 0 {
             let mut prefix_match = if self.tokens_have_vision_pad(tokens) {
@@ -107,6 +113,7 @@ impl TransformerModel {
             // and recompute SSM (+ overwrite KV) for tokens between the checkpoint
             // and matched_tokens. This trades some redundant KV writes for correct
             // SSM state propagation.
+            let mut cached_hidden: Option<spark_runtime::gpu::DevicePtr> = None;
             let mut skip = if let Some(snap_id) = prefix_match.ssm_snapshot {
                 let snap_tok = prefix_match.ssm_snapshot_tokens;
                 if snap_tok > 0
@@ -115,6 +122,12 @@ impl TransformerModel {
                         .ssm_snapshots
                         .session_matches(snap_id, seq.session_hash)
                 {
+                    // Full-prompt match: the snapshot's cached hidden state
+                    // is the exact `lm_head` input from the cold prefill,
+                    // and proc_range can bypass Phase 4 entirely.
+                    if snap_tok == total && matched == total {
+                        cached_hidden = Some(self.ssm_snapshots.hidden_snapshot_ptr(snap_id));
+                    }
                     // Diagnostic: identify which prompt this restore is for, so
                     // we can correlate with `Saved SSM snapshot N for ctx K
                     // (prompt_hash 0x...)` log lines on the save side. Hash is
@@ -194,12 +207,21 @@ impl TransformerModel {
                 0
             };
             seq.marconi_skip_to = skip_tokens;
-            Ok((skip_tokens, skip))
+            // Persist the cached hidden ptr across chunks so the LAST
+            // chunk's proc_range can use it. Chunk 0 finds it here but
+            // typically isn't is_last (long prompts split across budget
+            // boundaries), so we hand it to the SequenceState and the
+            // last chunk reads it back via `seq.marconi_cached_hidden`.
+            seq.marconi_cached_hidden = cached_hidden;
+            Ok((skip_tokens, skip, cached_hidden))
         } else if seq.marconi_skip_to > 0 {
-            // Chunk 1+: inherit skip info from chunk 0's prefix cache lookup.
-            Ok((seq.marconi_skip_to, true))
+            // Chunk 1+: inherit skip info AND cached-hidden ptr from
+            // chunk 0's prefix cache lookup. The pointer's lifetime is
+            // pinned to the snapshot pool's allocation, which lives for
+            // the whole server, so handing it across chunks is safe.
+            Ok((seq.marconi_skip_to, true, seq.marconi_cached_hidden))
         } else {
-            Ok((0, false))
+            Ok((0, false, None))
         }
     }
 }

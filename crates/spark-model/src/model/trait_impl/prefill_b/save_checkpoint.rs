@@ -37,6 +37,7 @@ impl TransformerModel {
             seq.slot_idx,
             seq.session_hash,
             &self.ssm_pool,
+            None,
             self.gpu.as_ref(),
             stream,
         ) {
@@ -52,6 +53,7 @@ impl TransformerModel {
                             seq.slot_idx,
                             seq.session_hash,
                             &self.ssm_pool,
+                            None,
                             self.gpu.as_ref(),
                             stream,
                         )

@@ -222,7 +222,7 @@ impl TransformerModel {
             )?;
 
             // Prefix-cache lookup, EP-sync, Marconi restore.
-            let (kv_write_start, marconi_skip) = self.prefill_b_prefix_lookup(
+            let (kv_write_start, marconi_skip, cached_hidden) = self.prefill_b_prefix_lookup(
                 tokens,
                 seq,
                 chunk_start,
@@ -254,6 +254,7 @@ impl TransformerModel {
                     is_last_chunk,
                     kv_write_start,
                     marconi_skip,
+                    cached_hidden,
                     buffers,
                     stream,
                 )? {
@@ -265,6 +266,12 @@ impl TransformerModel {
                 ProcRange::EarlyReturn(_) => anyhow::bail!(
                     "kernel-batched: stream {b} early-returned during proc_range \
                          — eligibility check missed this. Caller should fall back."
+                ),
+                ProcRange::CachedHidden(_) => anyhow::bail!(
+                    "kernel-batched: stream {b} took option-#5 cached-hidden \
+                         fast path — eligibility check should have routed this \
+                         stream through the per-stream loop. Caller should fall \
+                         back to single-stream prefill."
                 ),
             };
 

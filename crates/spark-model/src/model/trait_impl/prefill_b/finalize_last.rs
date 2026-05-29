@@ -158,6 +158,7 @@ impl TransformerModel {
                 seq.slot_idx,
                 seq.session_hash,
                 &self.ssm_pool,
+                Some(normed),
                 self.gpu.as_ref(),
                 stream,
             ) {
@@ -173,6 +174,7 @@ impl TransformerModel {
                                 seq.slot_idx,
                                 seq.session_hash,
                                 &self.ssm_pool,
+                                Some(normed),
                                 self.gpu.as_ref(),
                                 stream,
                             )

@@ -151,11 +151,18 @@ impl TransformerModel {
             gpu.as_ref(),
         )?;
 
-        // Marconi SSM snapshot pool for prefix caching
+        // Marconi SSM snapshot pool for prefix caching. `hidden_bytes` is
+        // the byte size of one post-final-RMS-norm hidden state vector,
+        // which lm_head consumes during the last prefill chunk. We cache
+        // it alongside the SSM state so warm-cache hits skip Phase 4
+        // entirely (see SsmSnapshotPool::hidden_snapshot_ptr).
+        let hidden_dtype_bytes = if config.use_fp32_residual() { 4 } else { 2 };
+        let snapshot_hidden_bytes = config.hidden_size * hidden_dtype_bytes;
         let ssm_snapshots = SsmSnapshotPool::new(
             ssm_cache_slots,
             ssm_pool.h_bytes,
             ssm_pool.conv_bytes,
+            snapshot_hidden_bytes,
             ssm_pool.num_ssm_layers,
             gpu.as_ref(),
         )?;

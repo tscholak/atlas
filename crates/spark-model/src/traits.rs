@@ -88,6 +88,15 @@ pub struct SequenceState {
     /// Set on chunk 0's prefix cache lookup, read by subsequent chunks to skip
     /// computation for tokens already covered by the snapshot + KV cache.
     pub marconi_skip_to: usize,
+    /// Option #5: device pointer to the cached post-final-RMS-norm hidden
+    /// state from the snapshot pool, populated by chunk 0's prefix lookup
+    /// when the snapshot covers the full prompt. The last chunk's
+    /// `proc_range` reads this and (if `Some`) feeds it directly into
+    /// `lm_head`, skipping Phase 4 entirely and avoiding the 1-step SSM
+    /// state advance that the decode-kernel re-process would otherwise
+    /// introduce. `None` when there's no full-prompt snapshot or when
+    /// snapshots are disabled.
+    pub marconi_cached_hidden: Option<spark_runtime::gpu::DevicePtr>,
     /// Session hash for SSM snapshot isolation. Set by the scheduler before
     /// prefill. The model uses this to tag saved snapshots and verify ownership
     /// before restoring. 0 = no session tracking (legacy behavior).

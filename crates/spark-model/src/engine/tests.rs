@@ -149,6 +149,7 @@ impl Model for MockModel {
             proposer_state: None,
             slot_idx: 0,
             marconi_skip_to: 0,
+            marconi_cached_hidden: None,
             session_hash: 0,
             chunked_prefill_meta: None,
             cached_prefix_tokens: 0,

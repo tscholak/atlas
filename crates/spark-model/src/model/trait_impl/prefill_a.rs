@@ -481,7 +481,14 @@ impl TransformerModel {
         seq.seq_len = n;
 
         // ── 8. Insert into prefix cache + save SSM snapshot for Marconi ──
-        self.prefill_save_snapshot_with_vision_gate(tokens, seq, &mut kv_cache, bs, stream);
+        self.prefill_save_snapshot_with_vision_gate(
+            tokens,
+            seq,
+            &mut kv_cache,
+            bs,
+            normed,
+            stream,
+        );
 
         // DFlash: advance the seq's `ctx_len` to span all just-prefilled
         // positions so the next propose() can read them.

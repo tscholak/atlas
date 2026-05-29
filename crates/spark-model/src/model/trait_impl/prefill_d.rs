@@ -93,6 +93,7 @@ impl TransformerModel {
         seq: &SequenceState,
         kv_cache: &mut PagedKvCache,
         bs: usize,
+        normed: DevicePtr,
         stream: u64,
     ) {
         if self.ssm_snapshots.is_enabled() {
@@ -100,6 +101,7 @@ impl TransformerModel {
                 seq.slot_idx,
                 seq.session_hash,
                 &self.ssm_pool,
+                Some(normed),
                 self.gpu.as_ref(),
                 stream,
             ) {
@@ -115,6 +117,7 @@ impl TransformerModel {
                                 seq.slot_idx,
                                 seq.session_hash,
                                 &self.ssm_pool,
+                                Some(normed),
                                 self.gpu.as_ref(),
                                 stream,
                             )
@@ -179,6 +182,7 @@ impl TransformerModel {
         seq: &SequenceState,
         kv_cache: &mut PagedKvCache,
         bs: usize,
+        normed: DevicePtr,
         stream: u64,
     ) {
         if self.ssm_snapshots.is_enabled() {
@@ -186,6 +190,7 @@ impl TransformerModel {
                 seq.slot_idx,
                 seq.session_hash,
                 &self.ssm_pool,
+                Some(normed),
                 self.gpu.as_ref(),
                 stream,
             ) {
@@ -201,6 +206,7 @@ impl TransformerModel {
                                 seq.slot_idx,
                                 seq.session_hash,
                                 &self.ssm_pool,
+                                Some(normed),
                                 self.gpu.as_ref(),
                                 stream,
                             )

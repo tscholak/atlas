@@ -34,6 +34,17 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 pub(crate) struct SsmSnapshotPool {
     pub(super) h_snapshots: Vec<DevicePtr>,
     pub(super) conv_snapshots: Vec<DevicePtr>,
+    /// Single allocation of `num_slots * hidden_bytes`. Holds the
+    /// post-final-RMS-norm hidden state at the end of the prompt (the
+    /// exact buffer that cold prefill feeds into `lm_head`). When a
+    /// warm cache hit covers the entire prompt we can skip Phase 4
+    /// entirely and pass this pointer directly into `lm_head`, which
+    /// makes warm == cold bit-for-bit and stops the 1-step state-advance
+    /// drift documented in `prefill_b/finalize_last.rs`'s `is_warm_cache_
+    /// last_token` comment. Empty (`DevicePtr::NULL`) when snapshots are
+    /// disabled.
+    pub(super) hidden_snapshots: DevicePtr,
+    pub(super) hidden_bytes: usize,
     pub(super) free_slots: Mutex<Vec<usize>>,
     pub(super) num_slots: usize,
     pub(super) h_bytes: usize,
@@ -49,6 +60,7 @@ impl SsmSnapshotPool {
         num_slots: usize,
         h_bytes: usize,
         conv_bytes: usize,
+        hidden_bytes: usize,
         num_ssm_layers: usize,
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
@@ -56,6 +68,8 @@ impl SsmSnapshotPool {
             return Ok(Self {
                 h_snapshots: Vec::new(),
                 conv_snapshots: Vec::new(),
+                hidden_snapshots: DevicePtr::NULL,
+                hidden_bytes,
                 free_slots: Mutex::new(Vec::new()),
                 num_slots: 0,
                 h_bytes,
@@ -71,16 +85,22 @@ impl SsmSnapshotPool {
             h_snapshots.push(gpu.alloc(num_slots * h_bytes)?);
             conv_snapshots.push(gpu.alloc(num_slots * conv_bytes)?);
         }
+        let hidden_snapshots = gpu.alloc(num_slots * hidden_bytes)?;
 
         let free_slots: Vec<usize> = (0..num_slots).rev().collect();
-        let total_mb = num_ssm_layers * num_slots * (h_bytes + conv_bytes) / (1024 * 1024);
+        let total_mb = (num_ssm_layers * num_slots * (h_bytes + conv_bytes)
+            + num_slots * hidden_bytes)
+            / (1024 * 1024);
         tracing::info!(
-            "SSM snapshot pool (Marconi): {num_slots} slots × {num_ssm_layers} layers = {total_mb} MB",
+            "SSM snapshot pool (Marconi): {num_slots} slots × {num_ssm_layers} layers \
+             + {hidden_bytes}B hidden = {total_mb} MB",
         );
 
         Ok(Self {
             h_snapshots,
             conv_snapshots,
+            hidden_snapshots,
+            hidden_bytes,
             free_slots: Mutex::new(free_slots),
             num_slots,
             h_bytes,
@@ -95,6 +115,14 @@ impl SsmSnapshotPool {
     }
 
     /// Save SSM state from active pool slot into a snapshot slot.
+    /// `normed_src = Some(ptr)` additionally caches the post-final-RMS-norm
+    /// hidden state (the `lm_head` input) so warm-cache full-prompt hits
+    /// can skip Phase 4 entirely via [`Self::hidden_snapshot_ptr`].
+    /// Intermediate checkpoints pass `None` because they live mid-prompt
+    /// and have no meaningful "post-LN of final token" — those snapshots
+    /// are only consumed via partial-match recompute, which never reads
+    /// the hidden slot.
+    ///
     /// Returns `None` if no free snapshot slots are available.
     /// Tags the snapshot with `session_hash` for session-scoped isolation.
     pub(super) fn save(
@@ -102,6 +130,7 @@ impl SsmSnapshotPool {
         ssm_slot: usize,
         session_hash: u64,
         main_pool: &SsmStatePool,
+        normed_src: Option<DevicePtr>,
         gpu: &dyn GpuBackend,
         stream: u64,
     ) -> Result<Option<usize>> {
@@ -126,10 +155,28 @@ impl SsmSnapshotPool {
                 stream,
             )?;
         }
+        if let Some(src) = normed_src {
+            gpu.copy_d2d_async(
+                src,
+                self.hidden_snapshots
+                    .offset(snap_slot * self.hidden_bytes),
+                self.hidden_bytes,
+                stream,
+            )?;
+        }
         if session_hash != 0 {
             self.session_tags.lock().insert(snap_slot, session_hash);
         }
         Ok(Some(snap_slot))
+    }
+
+    /// Pointer to the cached post-LN hidden state for `snap_slot`. The
+    /// warm-cache `prefill_chunk_dispatch` path passes this directly into
+    /// `lm_head` instead of re-running embed→layers→LN on the last token
+    /// (which would advance SSM state by one step and shift logits — the
+    /// 1-step drift documented in `prefill_b/finalize_last.rs`).
+    pub(super) fn hidden_snapshot_ptr(&self, snap_slot: usize) -> DevicePtr {
+        self.hidden_snapshots.offset(snap_slot * self.hidden_bytes)
     }
 
     /// Check if a snapshot belongs to the given session.
