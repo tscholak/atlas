@@ -136,7 +136,24 @@ impl TransformerModel {
         }
 
         // ── 8. Insert into prefix cache + Marconi snapshot ──
-        if self.ssm_snapshots.is_enabled() {
+        //
+        // EarlyReturn warm-cache case: `proc_count == 1` together with a
+        // non-zero `marconi_skip_to` means we restored a snapshot for the
+        // full prompt and then re-ran the last token through the decode
+        // kernel just to populate `hidden[0]` for `lm_head`. The decode
+        // kernel ADVANCED the SSM state by one step (it cannot read h
+        // without also writing the next h), so the live state is now
+        // h_(L) when it should be h_(L-1). Saving a snapshot here would
+        // persist that drift; the next warm-cache hit would restore the
+        // drifted state and advance to h_(L+1), and so on. Empirically
+        // (2026-05-29 T=0 single-prompt sanity test): each warm iteration
+        // produced slightly different outputs from the previous and after
+        // ~4 iterations responses degenerated into 2-token EOS-suppressed
+        // stops. The cold-prefill snapshot is correct and can be restored
+        // indefinitely; skip the save here so it survives.
+        let is_warm_cache_last_token =
+            proc_count == 1 && seq.marconi_skip_to > 0 && self.ssm_snapshots.is_enabled();
+        if self.ssm_snapshots.is_enabled() && !is_warm_cache_last_token {
             let snap_result = match self.ssm_snapshots.save(
                 seq.slot_idx,
                 seq.session_hash,
@@ -175,6 +192,21 @@ impl TransformerModel {
                 if self.tokens_have_vision_pad(tokens) {
                     self.ssm_snapshots.free(snap_id);
                 } else {
+                    // Diagnostic: same first-32-tokens FNV hash as the restore
+                    // side logs, so save/restore can be correlated in one grep.
+                    let prompt_hash = {
+                        let mut h: u64 = 0xcbf29ce484222325;
+                        for &t in tokens.iter().take(32) {
+                            h ^= t as u64;
+                            h = h.wrapping_mul(0x100000001b3);
+                        }
+                        h
+                    };
+                    tracing::info!(
+                        target: "atlas::lockprof",
+                        "ssm_snapshot SAVE snap_id={} token_count={} session_hash=0x{:x} prompt_hash32=0x{:x} ssm_slot={}",
+                        snap_id, tokens.len(), seq.session_hash, prompt_hash, seq.slot_idx,
+                    );
                     tracing::info!(
                         "Saved SSM snapshot {} for {} tokens ({} blocks) [chunk]",
                         snap_id,
@@ -192,6 +224,11 @@ impl TransformerModel {
                     );
                     super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
                     if let Some(old) = displaced {
+                        tracing::info!(
+                            target: "atlas::lockprof",
+                            "ssm_snapshot FREE_DISPLACED snap_id={} (replaced by snap_id={})",
+                            old, snap_id,
+                        );
                         self.ssm_snapshots.free(old);
                     }
                 }

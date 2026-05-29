@@ -115,6 +115,24 @@ impl TransformerModel {
                         .ssm_snapshots
                         .session_matches(snap_id, seq.session_hash)
                 {
+                    // Diagnostic: identify which prompt this restore is for, so
+                    // we can correlate with `Saved SSM snapshot N for ctx K
+                    // (prompt_hash 0x...)` log lines on the save side. Hash is
+                    // FNV-1a-ish over the first 32 prompt tokens, which uniquely
+                    // identifies the request's prefix and is stable across runs.
+                    let prompt_hash = {
+                        let mut h: u64 = 0xcbf29ce484222325;
+                        for &t in tokens.iter().take(32) {
+                            h ^= t as u64;
+                            h = h.wrapping_mul(0x100000001b3);
+                        }
+                        h
+                    };
+                    tracing::info!(
+                        target: "atlas::lockprof",
+                        "ssm_snapshot RESTORE snap_id={} snap_tok={} matched={} total={} session_hash=0x{:x} prompt_hash32=0x{:x} ssm_slot={}",
+                        snap_id, snap_tok, matched, total, seq.session_hash, prompt_hash, seq.slot_idx,
+                    );
                     self.ssm_snapshots.restore(
                         snap_id,
                         seq.slot_idx,
