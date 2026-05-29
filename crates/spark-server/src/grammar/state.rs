@@ -26,6 +26,14 @@ pub struct GrammarState {
     vocab_size: usize,
 }
 
+// xgrammar's `CxxUniquePtr<GrammarMatcher>` holds a raw `*mut` to the C++
+// matcher; the auto-derived !Send escapes onto `GrammarState`. Each request
+// owns its own matcher (no shared state); we only transfer ownership across
+// threads in well-defined hand-off points (rayon par_iter_mut over the
+// scheduler's active vector). Mirrors the same `unsafe impl Send` already
+// applied to `GrammarEngine` for the same reason.
+unsafe impl Send for GrammarState {}
+
 impl GrammarState {
     /// Create a new per-request grammar state from a compiled grammar.
     ///

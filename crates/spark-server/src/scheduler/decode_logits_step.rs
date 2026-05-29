@@ -3,6 +3,7 @@
 //! process_decode_logits: post-decode logits processing.
 
 use super::*;
+use rayon::prelude::*;
 
 /// Sample and process decode logits for all active sequences.
 ///
@@ -37,6 +38,7 @@ pub fn process_decode_logits(
         || any_logprobs
         || model_logits_fp32;
 
+    let lockprof_sample_t0 = std::time::Instant::now();
     let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> =
         if active.iter().all(|a| a.temperature == 0.0) && !any_grammar && !needs_host_logits {
             // Fast path: all greedy, no grammar, no thinking — GPU argmax for the full batch.
@@ -67,6 +69,7 @@ pub fn process_decode_logits(
             // We just need to read it with the matching width.
             let logits_fp32 = model.decode_logits_fp32();
             let elem_bytes = if logits_fp32 { 4 } else { 2 };
+            let lockprof_d2h_t0 = std::time::Instant::now();
             let mut buf = vec![0u8; n * vocab_size * elem_bytes];
             if let Err(e) = model.copy_logits_to_host(logits, &mut buf) {
                 tracing::error!("copy_logits_to_host error: {e:#}");
@@ -75,8 +78,15 @@ pub fn process_decode_logits(
                 }
                 return;
             }
-            active
-                .iter_mut()
+            let lockprof_d2h_ms = lockprof_d2h_t0.elapsed().as_micros() as f64 / 1000.0;
+            let lockprof_sample_loop_t0 = std::time::Instant::now();
+            // Parallelize per-sequence sampling across rayon's pool. Each
+            // iteration owns a disjoint `&mut ActiveSeq` and reads a disjoint
+            // slice of `buf`; the model reference and reflection_suppress_ids
+            // are shared `&_`. At N=4 this collapses ~25 ms sequential into
+            // a single ~6 ms parallel pass (per-tick savings ~19 ms).
+            let r: Vec<(u32, Option<crate::api::TokenLogprobs>)> = active
+                .par_iter_mut()
                 .enumerate()
                 .map(|(i, a)| {
                     process_seq_logits(
@@ -95,7 +105,17 @@ pub fn process_decode_logits(
                         adaptive_sampling,
                     )
                 })
-                .collect()
+                .collect();
+            let lockprof_sample_loop_ms =
+                lockprof_sample_loop_t0.elapsed().as_micros() as f64 / 1000.0;
+            tracing::info!(
+                target: "atlas::lockprof",
+                "process_decode_logits n={n} host_path d2h={:.2}ms sample_loop={:.2}ms total={:.2}ms",
+                lockprof_d2h_ms,
+                lockprof_sample_loop_ms,
+                lockprof_sample_t0.elapsed().as_micros() as f64 / 1000.0,
+            );
+            r
         };
     let step_ms = t0.elapsed().as_secs_f64() * 1000.0;
     if tracing::enabled!(tracing::Level::DEBUG) {
