@@ -45,21 +45,23 @@ impl TransformerModel {
     /// streams. Cheap upfront check — caller (dispatch) falls back to
     /// per-stream when false.
     ///
-    /// SSM models are refused unconditionally: the Q12 per-layer batched
-    /// dispatchers (`prefill_ssm_batched_layer` etc.) are "compile-only"
-    /// per the file docstring above, and the SSM dispatcher mis-indexes
-    /// `ssm_pool` slots when N>=2 concurrent prefill streams are batched
-    /// into a single layer call, surfacing as `cuMemcpyHtoDAsync_v2
-    /// failed: status 700` and poisoning the CUDA context. Until the
-    /// SSM-batched path is hardware-validated, fall back to the
-    /// per-stream loop (the existing well-tested behaviour for SSM
-    /// prefills).
+    /// SSM-models gate (lifted 2026-05-30): the prior unconditional
+    /// refusal cited a `cuMemcpyHtoDAsync_v2 failed: status 700` from
+    /// "SSM dispatcher mis-indexes `ssm_pool` slots when N>=2 concurrent
+    /// prefill streams are batched into a single layer call." Reading
+    /// the current `stage_h_state_ptrs` (`h_state_ptrs.rs:38`) and the
+    /// batched SSM kernel wrappers (`gdn_prefill_persistent_batched`,
+    /// `gdn_prefill_split4_batched`) shows the staging path now writes
+    /// per-stream `SsmLayerState::h_state` device pointers into a
+    /// scratch slot, and the qwen3.6 `_batched` kernels dereference
+    /// `h_state_ptrs[b]` directly. That matches Phase IIa's per-slot
+    /// pointer-array pattern; the historical mis-indexing the docstring
+    /// described should be gone. Re-enabling so the Phase IIc workload
+    /// (4-way concurrent prefill on Qwen3.6) can amortise per-layer
+    /// weight reads across streams instead of paying them N times in
+    /// the per-stream fallback loop. If the CUDA 700 reappears in
+    /// practice, revert this line and investigate the kernel.
     pub(in crate::model) fn kernel_batched_eligible(&self, streams: &[PrefillSlice<'_>]) -> bool {
-        // Model-aware gate using the live `&self.config`. `num_ssm_layers`
-        // counts `layer_types` entries equal to `LinearAttention`.
-        if self.config.num_ssm_layers() > 0 {
-            return false;
-        }
         check_kernel_batched_eligible(
             streams
                 .iter()
