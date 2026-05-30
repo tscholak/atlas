@@ -324,6 +324,29 @@ extern "C" __global__ void causal_conv1d_update_chunk2(
 //
 // Grid: (ceil(dim/256), batch, 1)
 // Block: (256, 1, 1)
+//
+// Two entry points share the inline body below (see decode kernel comment
+// for the design rationale). `causal_conv1d_update_l2norm` uses a single
+// contiguous conv_state buffer; `causal_conv1d_update_l2norm_batched`
+// takes a per-batch pointer array — `conv_state_ptrs[b]` is the b-th
+// seq's slot in `SsmStatePool::conv_state_pools[layer]`.
+static __device__ __forceinline__ void causal_conv1d_update_l2norm_body(
+    float* __restrict__ state_for_b_base,
+    const __nv_bfloat16* __restrict__ new_input,
+    const __nv_bfloat16* __restrict__ weight,
+    const float* __restrict__ bias,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int ch,
+    unsigned int tid,
+    bool valid,
+    bool block_needs_l2,
+    unsigned int dim,
+    unsigned int d_conv,
+    unsigned int head_dim,
+    float l2_eps
+);
+
 extern "C" __global__ void causal_conv1d_update_l2norm(
     float* __restrict__ conv_state,             // [batch, dim, d_conv] FP32 (in/out)
     const __nv_bfloat16* __restrict__ new_input, // [batch, dim] BF16
@@ -341,16 +364,76 @@ extern "C" __global__ void causal_conv1d_update_l2norm(
     const unsigned int b = blockIdx.y;
     const unsigned int tid = threadIdx.x;
 
-    // Does this block contain Q/K channels that need L2 normalization?
     const unsigned int block_start = blockIdx.x * blockDim.x;
     const bool block_needs_l2 = (block_start < qk_channels);
-
     const bool valid = (ch < dim && b < batch);
+
+    // Single contiguous buffer — b indexes batch, stride is `dim * d_conv`.
+    // Compute the base unconditionally: b < gridDim.y = batch_size by
+    // grid construction, so `b * dim * d_conv` is always in-bounds. The
+    // body's per-channel offset is gated by `valid`, so an out-of-range
+    // ch never dereferences. Passing nullptr here would still be safe in
+    // the body (gated by `valid`) but UB at the function-call boundary
+    // for a `__restrict__` parameter — nvcc's aliasing optimisation can
+    // hoist speculative loads past the `valid` check.
+    float* state_for_b_base = conv_state + b * dim * d_conv;
+    causal_conv1d_update_l2norm_body(
+        state_for_b_base, new_input, weight, bias, output,
+        b, ch, tid, valid, block_needs_l2, dim, d_conv, head_dim, l2_eps
+    );
+}
+
+extern "C" __global__ void causal_conv1d_update_l2norm_batched(
+    float* const* __restrict__ conv_state_ptrs, // [batch] of [dim, d_conv] slot bases
+    const __nv_bfloat16* __restrict__ new_input,
+    const __nv_bfloat16* __restrict__ weight,
+    const float* __restrict__ bias,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch,
+    unsigned int dim,
+    unsigned int d_conv,
+    unsigned int qk_channels,
+    unsigned int head_dim,
+    float l2_eps
+) {
+    const unsigned int ch = blockIdx.x * blockDim.x + threadIdx.x;
+    const unsigned int b = blockIdx.y;
+    const unsigned int tid = threadIdx.x;
+
+    const unsigned int block_start = blockIdx.x * blockDim.x;
+    const bool block_needs_l2 = (block_start < qk_channels);
+    const bool valid = (ch < dim && b < batch);
+
+    // Per-batch slot resolution — base for this seq, body offsets by ch.
+    // b < gridDim.y = batch_size, so the array lookup is in-bounds.
+    float* state_for_b_base = conv_state_ptrs[b];
+    causal_conv1d_update_l2norm_body(
+        state_for_b_base, new_input, weight, bias, output,
+        b, ch, tid, valid, block_needs_l2, dim, d_conv, head_dim, l2_eps
+    );
+}
+
+static __device__ __forceinline__ void causal_conv1d_update_l2norm_body(
+    float* __restrict__ state_for_b_base,
+    const __nv_bfloat16* __restrict__ new_input,
+    const __nv_bfloat16* __restrict__ weight,
+    const float* __restrict__ bias,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int ch,
+    unsigned int tid,
+    bool valid,
+    bool block_needs_l2,
+    unsigned int dim,
+    unsigned int d_conv,
+    unsigned int head_dim,
+    float l2_eps
+) {
     float silu = 0.0f;
 
     // ── Step 1: Conv1d update + SiLU (same as causal_conv1d_update) ──
     if (valid) {
-        float* state = conv_state + (b * dim + ch) * d_conv;
+        float* state = state_for_b_base + ch * d_conv;
 
         for (unsigned int i = 0; i < d_conv - 1; i++)
             state[i] = state[i + 1];

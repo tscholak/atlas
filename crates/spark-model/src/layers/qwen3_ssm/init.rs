@@ -50,6 +50,11 @@ impl Qwen3SsmLayer {
             deinterleave_k: gpu.kernel("ssm_preprocess", "deinterleave_qkvz")?,
             conv1d_k: gpu.kernel("causal_conv1d", "causal_conv1d_update")?,
             conv1d_l2norm_k: gpu.kernel("causal_conv1d", "causal_conv1d_update_l2norm")?,
+            conv1d_l2norm_batched_k: super::super::try_kernel(
+                gpu,
+                "causal_conv1d",
+                "causal_conv1d_update_l2norm_batched",
+            ),
             // FP32 conv1d output prevents BF16 truncation in the recurrent
             // path from compounding past ~8k tokens. The Metal backend
             // (kernels/metal/common/causal_conv1d_update_l2norm.metal) only
@@ -157,6 +162,11 @@ impl Qwen3SsmLayer {
             w4a16_gemv_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
             gdn_wy2_k: gpu.kernel("gated_delta_rule_wy", "gated_delta_rule_wy2")?,
             gdn_wy3_k: gpu.kernel("gated_delta_rule_wy3", "gated_delta_rule_wy3")?,
+            gdn_wy3_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy3",
+                "gated_delta_rule_wy3_batched",
+            ),
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.

@@ -88,6 +88,48 @@ pub fn conv1d_update_l2norm(
         .launch(stream)
 }
 
+/// Batched-pool variant of [`conv1d_update_l2norm`]. Reads/writes
+/// `conv_state` per batch from `conv_state_ptrs[b]` — each entry points
+/// at the b-th seq's slot in `SsmStatePool::conv_state_pools[layer]`.
+/// All other args match the single-buffer variant.
+///
+/// Used by the Phase IIb batched verify dispatcher: K=3 verify wraps
+/// `conv1d_update_l2norm_batched` then `gdn_decode_wy3_batched` so the
+/// per-layer pass handles N seqs in a single dispatch.
+#[allow(clippy::too_many_arguments)]
+pub fn conv1d_update_l2norm_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    conv_state_ptrs: DevicePtr,
+    input: DevicePtr,
+    weight: &DenseWeight,
+    output: DevicePtr,
+    d_inner: u32,
+    d_conv: u32,
+    batch_size: u32,
+    qk_channels: u32,
+    head_dim: u32,
+    l2_eps: f32,
+    stream: u64,
+) -> Result<()> {
+    let bias_ptr = DevicePtr::NULL;
+    KernelLaunch::new(gpu, kernel)
+        .grid([div_ceil(d_inner, 256), batch_size, 1])
+        .block([256, 1, 1])
+        .arg_ptr(conv_state_ptrs)
+        .arg_ptr(input)
+        .arg_ptr(weight.weight)
+        .arg_ptr(bias_ptr)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(d_inner)
+        .arg_u32(d_conv)
+        .arg_u32(qk_channels)
+        .arg_u32(head_dim)
+        .arg_f32(l2_eps)
+        .launch(stream)
+}
+
 /// Multi-token conv1d sliding window update + SiLU for prefill.
 ///
 /// Processes `seq_len` tokens sequentially per channel in registers.

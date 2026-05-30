@@ -172,6 +172,62 @@ pub fn gdn_decode_wy3(
         .launch(stream)
 }
 
+/// Batched-pool variant of [`gdn_decode_wy3`]. Takes three per-batch
+/// pointer arrays: main h_state slot, intermediate-0 slot, intermediate-1
+/// slot. Inputs/outputs (`query`/`key`/`value`/`gate`/`beta`/`output`)
+/// stay contiguous per batch as in the single-buffer variant.
+///
+/// Kernel: `gated_delta_rule_wy3_batched(h_state_ptrs, query, key, value,
+///          gate, beta, output, h_state_inter0_ptrs, h_state_inter1_ptrs,
+///          batch_size, num_k_heads, num_v_heads, k_dim, v_dim,
+///          qk_stride, v_stride, gb_stride)`
+/// Grid: (num_v_heads, batch_size, 1)  Block: (128, 1, 1)
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_decode_wy3_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state_ptrs: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    h_state_inter0_ptrs: DevicePtr,
+    h_state_inter1_ptrs: DevicePtr,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .arg_ptr(h_state_ptrs)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_ptr(h_state_inter0_ptrs)
+        .arg_ptr(h_state_inter1_ptrs)
+        .arg_u32(batch_size)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
 /// WY-chunkwise 4-token GDN decode (2-pass algorithm).
 ///
 /// All 4 H^T @ k_t dot products computed in a single pass, then WY correction
