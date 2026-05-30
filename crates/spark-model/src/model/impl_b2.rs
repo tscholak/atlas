@@ -205,6 +205,10 @@ impl TransformerModel {
                 // MTP runs on rank 0 only — no EP all_reduce (BUG #26).
                 comm: None,
                 graph_capture: false,
+
+                slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+                slot_ptrs_buf: Some(self.slot_ptrs_buf),
             };
             let drafts = proposer.propose(
                 token_0,

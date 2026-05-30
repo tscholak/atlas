@@ -408,6 +408,10 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+
+            slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+            slot_ptrs_buf: Some(self.slot_ptrs_buf),
         };
 
         let prefill_ctx = ForwardContext {
@@ -418,6 +422,10 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false,
+
+            slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+            slot_ptrs_buf: Some(self.slot_ptrs_buf),
         };
 
         for (layer_idx, layer) in self.layers.iter().enumerate() {

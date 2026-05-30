@@ -182,19 +182,28 @@ impl Qwen3SsmLayer {
         let qkvz_size = ctx.config.ssm_qkvz_size();
         let ba_size = ctx.config.ssm_ba_size();
 
-        // ── Stage h_state_ptrs / conv_state_ptrs in scratch ──
-        // Use offsets past the 32K BatchedAttnMetadata region. Max batch
-        // is small (<=8), so 64 bytes each is safe. Layout in scratch:
-        //   [0..32K]      attention metadata (BatchedAttnMetadata)
-        //   [32K..64K]    free / other layer scratch
-        //   [64K..64K+64] h_state_ptrs[N]
-        //   [64K+64..]    conv_state_ptrs[N]
-        let scratch = ctx.buffers.scratch();
-        let h_ptrs_off = 65536usize;
-        let conv_ptrs_off = 65536 + 64;
-        let mut h_ptrs: Vec<u64> = Vec::with_capacity(n);
-        let mut conv_ptrs: Vec<u64> = Vec::with_capacity(n);
-        for state in states.iter_mut().take(n) {
+        // ── Stage h_state_ptrs / conv_state_ptrs ──
+        // Source: this layer's `slot_ptrs_host` (host-pinned, stable
+        // address for the layer's lifetime). Destination: this layer's
+        // `slot_ptrs_dev` (device-side mirror, also stable). Both
+        // layouts are `[2 × MAX_BATCHED_DECODE_SLOTS]` u64 — first half
+        // is h_state pointers, second half is conv_state pointers.
+        //
+        // The stability matters under CUDA graph capture: the graph's
+        // memcpy nodes reference these addresses and replay at later
+        // ticks. With the prior stack `Vec<u64>` source the pointer was
+        // dead by replay, causing hangs (see decode_a2.rs notes on the
+        // F-redux experiment).
+        anyhow::ensure!(
+            n <= super::MAX_BATCHED_DECODE_SLOTS,
+            "decode_multi_seq_batched: n={n} exceeds MAX_BATCHED_DECODE_SLOTS={}",
+            super::MAX_BATCHED_DECODE_SLOTS,
+        );
+        // SAFETY: slot_ptrs_host is allocated for layer lifetime with
+        // size MAX_BATCHED_DECODE_SLOTS * 8 * 2 bytes (init.rs).
+        let h_ptrs_host = self.slot_ptrs_host as *mut u64;
+        let conv_ptrs_host = unsafe { h_ptrs_host.add(super::MAX_BATCHED_DECODE_SLOTS) };
+        for (i, state) in states.iter_mut().take(n).enumerate() {
             let ssm = state
                 .as_any_mut()
                 .downcast_mut::<SsmLayerState>()
@@ -203,19 +212,25 @@ impl Qwen3SsmLayer {
                         "decode_multi_seq_batched: expected SsmLayerState"
                     )
                 })?;
-            h_ptrs.push(ssm.h_state.0);
-            conv_ptrs.push(ssm.conv_state.0);
+            // SAFETY: i < n <= MAX_BATCHED_DECODE_SLOTS.
+            unsafe {
+                h_ptrs_host.add(i).write(ssm.h_state.0);
+                conv_ptrs_host.add(i).write(ssm.conv_state.0);
+            }
         }
-        let h_ptrs_dev = scratch.offset(h_ptrs_off);
-        let conv_ptrs_dev = scratch.offset(conv_ptrs_off);
+        let h_ptrs_dev = self.slot_ptrs_dev;
+        let conv_ptrs_dev =
+            self.slot_ptrs_dev.offset(super::MAX_BATCHED_DECODE_SLOTS * 8);
         ctx.gpu.copy_h2d_async(
-            unsafe { std::slice::from_raw_parts(h_ptrs.as_ptr() as *const u8, n * 8) },
+            unsafe {
+                std::slice::from_raw_parts(h_ptrs_host as *const u8, n * 8)
+            },
             h_ptrs_dev,
             stream,
         )?;
         ctx.gpu.copy_h2d_async(
             unsafe {
-                std::slice::from_raw_parts(conv_ptrs.as_ptr() as *const u8, n * 8)
+                std::slice::from_raw_parts(conv_ptrs_host as *const u8, n * 8)
             },
             conv_ptrs_dev,
             stream,

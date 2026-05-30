@@ -134,6 +134,10 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+
+            slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+            slot_ptrs_buf: Some(self.slot_ptrs_buf),
         };
 
         // Profile mode: use per-layer sync decode for timing breakdown.

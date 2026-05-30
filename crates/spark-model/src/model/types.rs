@@ -131,6 +131,20 @@ pub struct TransformerModel {
     /// values were written most recently. See `gdn_decode_batched` and
     /// the Phase IIa kernel refactor for the indexing convention.
     pub(super) slot_ptrs_buf: DevicePtr,
+    /// Host-pinned mirror of `slot_ptrs_buf` — same layout, same byte
+    /// size. `stage_slot_ptrs_dispatch` writes the per-batch pool
+    /// pointers into the matching offset here and then issues an
+    /// `copy_h2d_async` from this stable host address to the device
+    /// buffer. Two reasons it must be a stable buffer (not a stack
+    /// slice as the first cut used):
+    ///   1. CUDA graphs capture the memcpy node's source pointer; on
+    ///      replay that pointer must still be live and addressable.
+    ///   2. Pinned memory enables true async DMA without internal
+    ///      staging, so the per-layer h2d is cheaper.
+    /// Allocated `SLOT_PTRS_NUM_KINDS × num_ssm_layers × max_batch_size
+    /// × 8` bytes — same sizing as `slot_ptrs_buf`. Freed in `Drop`.
+    pub(super) slot_ptrs_host_pinned: *mut u8,
+    pub(super) slot_ptrs_host_pinned_bytes: usize,
     /// Cached CUDA graphs for K=2 verification, **keyed by `seq.slot_idx`**.
     /// Same rationale as `decode_graph`: the captured graph has SSM
     /// h_state/conv_state pointers baked in as kernel arguments, so replay for

@@ -84,6 +84,10 @@ impl TransformerModel {
             profile: profile_now,
             comm: self.comm_ref(),
             graph_capture: false,
+
+            slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+            slot_ptrs_buf: Some(self.slot_ptrs_buf),
         };
 
         // When proc_count == 1 (warm prefix cache hit), use the decode layer path

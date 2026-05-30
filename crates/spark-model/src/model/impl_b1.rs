@@ -272,6 +272,8 @@ impl TransformerModel {
                 profile: false,
                 comm: ctx.comm,
                 graph_capture: ctx.graph_capture,
+                slot_ptrs_host_pinned: ctx.slot_ptrs_host_pinned,
+                slot_ptrs_buf: ctx.slot_ptrs_buf,
             }
         };
 
@@ -453,6 +455,8 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: false, // Eager mode — no CUDA graph
+            slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+            slot_ptrs_buf: Some(self.slot_ptrs_buf),
         };
 
         // Eager layer loop: skip SSM layers, run attention layers only

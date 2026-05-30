@@ -199,6 +199,19 @@ pub struct ForwardContext<'a> {
     /// True when inside CUDA graph capture (between begin_capture/end_capture).
     /// MoE layers use sync all_reduce (capturable) instead of async (event-based).
     pub graph_capture: bool,
+    /// Host-pinned mirror of the model's slot-ptr staging buffer, used as
+    /// the *source* for `copy_h2d_async` when staging per-batch SSM slot
+    /// pointers. Stable address (lives the model's lifetime) so CUDA-graph
+    /// memcpy nodes captured from it are replay-safe — replacing the prior
+    /// stack/heap source pointers that went dangling on replay. `None` when
+    /// the model wasn't allocated with the mirror (mock backends in tests).
+    pub slot_ptrs_host_pinned: Option<*mut u8>,
+    /// Device-side staging buffer for per-batch SSM slot pointers. Layer-
+    /// side batched paths (e.g. `decode_multi_seq_batched_inner`) write
+    /// their per-batch pointer arrays into a layer-specific offset within
+    /// this buffer and pass the resulting `DevicePtr` to the kernel.
+    /// `None` paired with `slot_ptrs_host_pinned: None`.
+    pub slot_ptrs_buf: Option<DevicePtr>,
 }
 
 /// A single transformer layer performing the full per-layer computation.

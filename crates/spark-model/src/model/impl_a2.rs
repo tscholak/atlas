@@ -56,6 +56,14 @@ impl TransformerModel {
         {
             tracing::warn!("Failed to free pinned staging: {e}");
         }
+        if !self.slot_ptrs_host_pinned.is_null()
+            && let Err(e) = self.gpu.free_host_pinned(
+                self.slot_ptrs_host_pinned,
+                self.slot_ptrs_host_pinned_bytes,
+            )
+        {
+            tracing::warn!("Failed to free slot_ptrs host-pinned mirror: {e}");
+        }
     }
 
     pub(super) fn ensure_chunked_prefill_meta<'a>(

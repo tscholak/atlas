@@ -149,6 +149,47 @@ pub struct Qwen3SsmLayer {
     out_proj_fp8: Option<DevicePtr>,
     fp8_gemm_k: KernelHandle,
     fp8_gemm_t_m128_k: KernelHandle, // M128: halves B re-reads for out_proj at ISL > 128
+    /// Per-layer host-pinned staging for the batched-decode path's
+    /// h_state/conv_state pointer arrays. The arena is sized for
+    /// `MAX_BATCHED_DECODE_SLOTS` u64 pointers per buffer:
+    ///   [0..max*8]        : h_state pointers, host-side
+    ///   [max*8..2*max*8]  : conv_state pointers, host-side
+    /// `slot_ptrs_dev` is the device-side mirror at the same layout.
+    /// Both addresses are stable for the layer's lifetime so a CUDA
+    /// graph that captures the memcpy nodes can replay them safely
+    /// — replacing the prior stack/heap source pointers that went
+    /// dangling on replay (see decode_a2.rs's `use_graphs` history).
+    slot_ptrs_host: *mut u8,
+    slot_ptrs_dev: DevicePtr,
+    slot_ptrs_total_bytes: usize,
+}
+
+/// Max concurrent sequences supported by the per-layer host/device
+/// staging for batched decode. The model dispatcher pads N to {2,4,8}
+/// for graph capture, so 8 covers production. Bump together with the
+/// `[2, 4, 8]` capture set in `decode_a2.rs` if N>8 ever lands.
+pub(super) const MAX_BATCHED_DECODE_SLOTS: usize = 8;
+
+/// Manual Send/Sync — `*mut u8` is not auto Send/Sync. The pointer
+/// targets host-pinned memory owned by this layer; reads/writes are
+/// serialised through the model's per-step locks (kv_cache, etc.),
+/// matching how the rest of TransformerModel asserts Send + Sync.
+unsafe impl Send for Qwen3SsmLayer {}
+unsafe impl Sync for Qwen3SsmLayer {}
+
+impl Drop for Qwen3SsmLayer {
+    fn drop(&mut self) {
+        // The layer doesn't keep a `gpu` handle past construction —
+        // the rest of the codebase frees device allocations implicitly
+        // via the backend's drop, but the *host-pinned* one needs a
+        // `cuMemFreeHost`. We can't dispatch that here without the
+        // backend handle, so we just leak the host buffer at model
+        // teardown. In production atlas runs one model per process
+        // and exits when the request thread terminates, so the leak
+        // is bounded by `num_ssm_layers × MAX_BATCHED_DECODE_SLOTS ×
+        // 16 = ~3.8 KB` per layer instance, negligible vs. the
+        // model's 35 GB working set.
+    }
 }
 
 // ── Sub-files (split for ≤500 LoC) ────────────────────────────────────────

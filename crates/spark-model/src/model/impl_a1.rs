@@ -227,6 +227,15 @@ impl TransformerModel {
         let slot_ptrs_total_bytes =
             SLOT_PTRS_NUM_KINDS * num_ssm_layers.max(1) * max_batch_size * 8;
         let slot_ptrs_buf = gpu.alloc(slot_ptrs_total_bytes)?;
+        // Pinned host-side mirror of slot_ptrs_buf so that copy_h2d_async
+        // sources from a stable address — required for CUDA graph capture
+        // to record a memcpy node whose source remains live at replay
+        // time. The previous stack-allocated source was alive only until
+        // stage_slot_ptrs_dispatch returned, which was fine for the
+        // ungraphed n>=2 decode path but corrupted replay on the F-redux
+        // graph-enabled experiment. See decode_a2.rs's `use_graphs` comment.
+        let slot_ptrs_host_pinned = gpu.alloc_host_pinned(slot_ptrs_total_bytes)?;
+        let slot_ptrs_host_pinned_bytes = slot_ptrs_total_bytes;
 
         // DFlash 5-layer hidden-state stack. Allocated only when a
         // BlockDiffusionDraftHead is the active proposer (`config.dflash_capture_layers`
@@ -471,6 +480,8 @@ impl TransformerModel {
             dflash_hidden_save,
             dflash_capture_layers,
             slot_ptrs_buf,
+            slot_ptrs_host_pinned,
+            slot_ptrs_host_pinned_bytes,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),

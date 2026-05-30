@@ -117,15 +117,24 @@ impl TransformerModel {
         let byte_offset = slot_index * 8;
         let dst = self.slot_ptrs_buf.offset(byte_offset);
 
-        // Resolve per-slot pool pointers in host memory, then async H2D
-        // copy. We keep the host vector on the stack (small — N≤8) to
-        // avoid an allocation in the hot path; the byte view aliases the
-        // u64 array via the standard `slice::from_raw_parts` pattern.
-        let mut bases: [u64; 16] = [0; 16];
-        assert!(
-            batch_size <= bases.len(),
-            "stage_slot_ptrs: batch_size {batch_size} exceeds stack buffer",
-        );
+        // Resolve per-slot pool pointers and write them into the
+        // matching slice of `slot_ptrs_host_pinned`. The source slice
+        // we hand to `copy_h2d_async` is THIS pinned region — a stable
+        // host address that's still live at CUDA graph replay time
+        // (the previous stack-based version captured a dead pointer
+        // when graphs were enabled, hanging replay; see decode_a2.rs).
+        //
+        // The host-pinned mirror has the same `[NUM_KINDS][num_ssm_layers]
+        // [max_slots]` partition as `slot_ptrs_buf`, so the byte offset
+        // here is the same one we already computed for `dst`.
+        //
+        // SAFETY: `slot_ptrs_host_pinned` is allocated for the model's
+        // lifetime with size `slot_ptrs_host_pinned_bytes`, which the
+        // assert above guards against overruns of (`batch_size <=
+        // max_slots` and the partition includes (kind, layer)).
+        let host_base = unsafe {
+            self.slot_ptrs_host_pinned.add(byte_offset) as *mut u64
+        };
         for (i, &slot) in slots.iter().enumerate() {
             let ptr = match kind {
                 SsmPtrKind::HState => self.ssm_pool.h_state(ssm_layer_idx, slot),
@@ -137,10 +146,13 @@ impl TransformerModel {
                     self.ssm_pool.conv_intermediate(ssm_layer_idx, slot, t)
                 }
             };
-            bases[i] = ptr.0;
+            // SAFETY: i < batch_size <= max_slots, host_base is the
+            // base of this (kind, layer) band which reserves
+            // max_slots * 8 bytes.
+            unsafe { host_base.add(i).write(ptr.0); }
         }
         let bytes = unsafe {
-            std::slice::from_raw_parts(bases.as_ptr() as *const u8, batch_size * 8)
+            std::slice::from_raw_parts(host_base as *const u8, batch_size * 8)
         };
         self.gpu.copy_h2d_async(bytes, dst, stream)?;
         Ok(dst)

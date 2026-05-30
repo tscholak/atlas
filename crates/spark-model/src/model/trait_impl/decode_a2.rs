@@ -97,32 +97,26 @@ impl TransformerModel {
         // 1d. Upload metadata with fixed stride (active + padding)
         let metadata = self.upload_batch_metadata_fixed(seqs, padded_n, &mut kv_cache, stream)?;
 
-        // CUDA graphs DISABLED for multi-sequence decode.
+        // CUDA graphs for multi-sequence decode.
         //
-        // History (chronological):
-        // 1. Phase IIb-F standalone (commit b1dec75): enabled graphs on
-        //    the per-seq decode path. Output stayed correct but N=4
-        //    decode-heavy regressed 33.8 → 24.4 t/s (-28%) — graph
-        //    capture overhead exceeded replay savings at this shape.
-        // 2. Phase IIb-F redux (2026-05-30, after Phase IIb-A): tried
-        //    enabling graphs only when ATLAS_BATCHED_SSM_DECODE=1, on
-        //    the hypothesis that fewer per-tick launches would shift
-        //    the capture-vs-replay balance. Graph capture succeeded
-        //    for N=2 but replay hung: the batched path stages
-        //    per-batch slot-pointer arrays via copy_h2d_async from a
-        //    stack-allocated u64[16] in `stage_slot_ptrs_dispatch`,
-        //    and the graph's captured memcpy node references that
-        //    host buffer — which is gone by replay time, so the
-        //    pointer array on device is garbage and the kernel
-        //    dereferences it for h_state and friends.
-        //
-        // Unblocker for F: stage slot pointers from a stable host-pinned
-        // (or device-resident, precomputed) buffer keyed by `(kind,
-        // ssm_layer_idx, batch_position)` so the graph's memcpy node
-        // points at an address that's still alive at replay. That's a
-        // refactor of `stage_slot_ptrs_dispatch` + `slot_ptrs_buf`
-        // ownership; out of scope for now.
-        let use_graphs = false;
+        // History:
+        // 1. Phase IIb-F standalone (commit b1dec75): graphs ON for the
+        //    per-seq layer-forward shape regressed N=4 decode-heavy
+        //    33.8 → 24.4 t/s (-28%) — capture overhead > replay savings.
+        // 2. Phase IIb-F redux #1 (2026-05-30, after Phase IIb-A): hung
+        //    at replay because the layer-side staging in
+        //    `decode_multi_seq_batched_inner` sourced h2d from a
+        //    `Vec<u64>` that was dead by replay time, and the model-side
+        //    `stage_slot_ptrs_dispatch` sourced from a `[u64;16]` stack
+        //    array with the same hazard.
+        // 3. Phase IIb-F redux #2 (this commit): both staging paths now
+        //    source from stable host-pinned buffers (per-layer on the
+        //    SSM layer for decode, model-wide for the verify
+        //    dispatcher). Gated on ATLAS_BATCHED_SSM_DECODE=1 so we
+        //    compare graph+batched vs the proven per-seq path under the
+        //    same env knob.
+        let use_graphs = std::env::var("ATLAS_BATCHED_SSM_DECODE")
+            .is_ok_and(|v| v == "1" || v == "true");
 
         let ctx = ForwardContext {
             buffers: &self.buffers,
@@ -132,6 +126,10 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+
+            slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+            slot_ptrs_buf: Some(self.slot_ptrs_buf),
         };
 
         // ── Phase 2: CUDA graph lookup / capture ──

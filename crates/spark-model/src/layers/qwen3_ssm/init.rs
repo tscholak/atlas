@@ -196,6 +196,12 @@ impl Qwen3SsmLayer {
             out_proj_fp8: None,
             fp8_gemm_k: gpu.kernel("w4a16", "fp8_gemm_t")?,
             fp8_gemm_t_m128_k: gpu.kernel("w4a16", "fp8_gemm_t_m128")?,
+            slot_ptrs_host: {
+                let bytes = super::MAX_BATCHED_DECODE_SLOTS * 8 * 2;
+                gpu.alloc_host_pinned(bytes)?
+            },
+            slot_ptrs_dev: gpu.alloc(super::MAX_BATCHED_DECODE_SLOTS * 8 * 2)?,
+            slot_ptrs_total_bytes: super::MAX_BATCHED_DECODE_SLOTS * 8 * 2,
         })
     }
 

@@ -55,6 +55,10 @@ fn test_forward_context_lifetime() {
         profile: false,
         comm: None,
         graph_capture: false,
+
+        slot_ptrs_host_pinned: None,
+
+        slot_ptrs_buf: None,
     };
 
     assert_eq!(ctx.config.hidden_size, 2048);

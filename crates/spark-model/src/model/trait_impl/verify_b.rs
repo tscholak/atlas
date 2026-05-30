@@ -179,6 +179,10 @@ impl TransformerModel {
             profile: false,
             comm: self.comm_ref(),
             graph_capture: use_graphs,
+
+            slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+            slot_ptrs_buf: Some(self.slot_ptrs_buf),
         };
 
         // ── Phase 2: CUDA graph capture / replay ──

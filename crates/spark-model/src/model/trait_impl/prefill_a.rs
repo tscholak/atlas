@@ -371,6 +371,10 @@ impl TransformerModel {
             profile: self.profile,
             comm: self.comm_ref(),
             graph_capture: false,
+
+            slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+            slot_ptrs_buf: Some(self.slot_ptrs_buf),
         };
 
         // ── 4. Forward through all layers ──

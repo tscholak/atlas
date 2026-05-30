@@ -132,6 +132,10 @@ impl TransformerModel {
                         profile: false,
                         comm: self.comm_ref(),
                         graph_capture: false,
+
+                        slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+                        slot_ptrs_buf: Some(self.slot_ptrs_buf),
                     };
 
                     let h_t = hidden.offset(t * h * fp32);
@@ -159,6 +163,10 @@ impl TransformerModel {
                     profile: false,
                     comm: self.comm_ref(),
                     graph_capture: false,
+
+                    slot_ptrs_host_pinned: Some(self.slot_ptrs_host_pinned),
+
+                    slot_ptrs_buf: Some(self.slot_ptrs_buf),
                 };
 
                 layer.decode_batched(
