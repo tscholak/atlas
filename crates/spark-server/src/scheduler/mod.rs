@@ -81,6 +81,14 @@ use crate::grammar::{GrammarEngine, GrammarState};
 use crate::ngram::NgramProposer;
 use crate::scheduling_policy::SchedulingPolicy;
 
+/// Maximum batch size routed through the MTP path. Phase I (sequential
+/// per-seq dispatch) is correctness-only — step_mtp's bootstrap+verify
+/// loops iterate sequentially per seq, so wall time scales linearly with
+/// batch size. Phase II will replace this with a single batched-verify
+/// kernel call, at which point the cap becomes a tuning knob for
+/// kernel-shape variability.
+const MAX_MTP_BATCH: usize = 4;
+
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
@@ -181,10 +189,22 @@ pub fn run(
 
     install_high_speed_swap(&*model, high_speed_swap_cfg);
 
+    // Per-tick gap profiler. Opt-in via RUST_LOG=info,atlas::tick=info.
+    // Logs once per tick when there's decode activity, with the wall time
+    // spent in each phase plus the inter-tick gap (last tick's end to this
+    // tick's start). All durations in milliseconds.
+    let mut last_tick_end: Option<std::time::Instant> = None;
     loop {
+        let tick_start = std::time::Instant::now();
+        let inter_tick_gap_ms = last_tick_end
+            .map(|t| (tick_start - t).as_micros() as f64 / 1000.0)
+            .unwrap_or(0.0);
+
         // ── Drain pending → start prefill (chunked or full) ──
+        let phase_drain_t0 = std::time::Instant::now();
         let new_reqs =
             drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+        let phase_drain_ms = phase_drain_t0.elapsed().as_micros() as f64 / 1000.0;
         if new_reqs.is_empty() && active.is_empty() && prefilling.is_empty() {
             // Receiver thread was closed (shutdown).
             let pending_closed = pending.0.lock().closed;
@@ -228,6 +248,7 @@ pub fn run(
         }
 
         // ── Start new requests ──
+        let phase_start_t0 = std::time::Instant::now();
         start_new_requests(
             &*model,
             new_reqs,
@@ -246,8 +267,10 @@ pub fn run(
             &mut active,
             &mut prefilling,
         );
+        let phase_start_ms = phase_start_t0.elapsed().as_micros() as f64 / 1000.0;
 
         // ── Continue in-progress prefills ──
+        let phase_cont_t0 = std::time::Instant::now();
         let did_mixed_step = continue_in_progress_prefills(
             &*model,
             &*policy,
@@ -266,12 +289,16 @@ pub fn run(
             &reflection_suppress_ids,
             adaptive_sampling,
         );
+        let phase_cont_ms = phase_cont_t0.elapsed().as_micros() as f64 / 1000.0;
 
         if active.is_empty() {
+            last_tick_end = Some(std::time::Instant::now());
             continue;
         }
 
         // Skip decode when mixed_forward already processed decode logits.
+        let phase_decode_t0 = std::time::Instant::now();
+        let active_n_for_log = active.len();
         if !did_mixed_step {
             // Ensure any in-flight prefill work on the prefill stream is complete
             // before decode starts on the default stream.
@@ -290,12 +317,22 @@ pub fn run(
                 // Self-speculative: draft via layer-skipping, verify with full model.
                 step_self_spec(&*model, &mut active, num_drafts);
             } else if use_mtp
-                && active.len() == 1
-                && !active[0].inside_thinking
-                && !active[0].suppress_tool_call
-                && !active[0].disable_mtp
+                && active.len() <= MAX_MTP_BATCH
+                && active
+                    .iter()
+                    .all(|a| !a.inside_thinking && !a.suppress_tool_call && !a.disable_mtp)
             {
                 // MTP speculative decode: beneficial at all context lengths.
+                // Phase I (2026-05-30): gate widened from `active.len() == 1`
+                // to `<= MAX_MTP_BATCH`. step_mtp's bootstrap+verify loops
+                // already iterate per-seq; this lift just lets them run for
+                // multiple sequences sequentially. The shared
+                // `mtp_hidden_save` / `buffers.hidden_states()` are reused
+                // per-seq within each iteration (save→propose happens
+                // atomically before the next seq's verify), so per-seq
+                // hidden state doesn't collide. Phase II will replace the
+                // sequential dispatch with a true batched-verify kernel
+                // amortising the layer forward across N seqs.
                 step_mtp(&*model, &mut active, num_drafts);
             } else {
                 // Batch decode (no MTP). Clear stale drafts when transitioning out of MTP mode.
@@ -317,7 +354,11 @@ pub fn run(
             }
         }
 
+        let phase_decode_ms = phase_decode_t0.elapsed().as_micros() as f64 / 1000.0;
+
+        let phase_retire_t0 = std::time::Instant::now();
         retire_finished_sequences(&*model, &mut active);
+        let phase_retire_ms = phase_retire_t0.elapsed().as_micros() as f64 / 1000.0;
 
         // ── Swap-in: resume swapped sequences when blocks free up ──
         if let Some(ref mut spill) = spill_manager {
@@ -345,6 +386,18 @@ pub fn run(
                 }
             }
         }
+
+        let tick_total_ms = tick_start.elapsed().as_micros() as f64 / 1000.0;
+        // Single-line per-tick gap profile. Only emitted when there was
+        // decode work, since idle ticks (active.is_empty() above) skip
+        // straight to the next iteration.
+        tracing::info!(
+            target: "atlas::tick",
+            "tick n={active_n_for_log} total={tick_total_ms:.2}ms gap_in={inter_tick_gap_ms:.2}ms \
+             drain={phase_drain_ms:.2}ms start={phase_start_ms:.2}ms cont={phase_cont_ms:.2}ms \
+             decode={phase_decode_ms:.2}ms retire={phase_retire_ms:.2}ms",
+        );
+        last_tick_end = Some(std::time::Instant::now());
     }
 
     // Periodic session eviction: free SSM snapshots for expired sessions.

@@ -39,11 +39,36 @@ pub fn process_decode_logits(
         || model_logits_fp32;
 
     let lockprof_sample_t0 = std::time::Instant::now();
+    if n >= 2 {
+        let temps: Vec<f32> = active.iter().map(|a| a.temperature).collect();
+        let thinks: Vec<bool> = active
+            .iter()
+            .map(|a| a.inside_thinking || a.think_ended)
+            .collect();
+        tracing::info!(
+            target: "atlas::lockprof",
+            "decode_gate n={n} all_t0={} any_grammar={} any_logprobs={} fp32={} any_think_state={} temps={:?} thinks={:?}",
+            active.iter().all(|a| a.temperature == 0.0),
+            any_grammar,
+            any_logprobs,
+            model_logits_fp32,
+            active.iter().any(|a| a.inside_thinking || a.think_ended),
+            temps,
+            thinks,
+        );
+    }
     let new_tokens: Vec<(u32, Option<crate::api::TokenLogprobs>)> =
         if active.iter().all(|a| a.temperature == 0.0) && !any_grammar && !needs_host_logits {
             // Fast path: all greedy, no grammar, no thinking — GPU argmax for the full batch.
             match model.argmax_batch(logits, n, 0) {
-                Ok(t) => t.into_iter().map(|tok| (tok, None)).collect(),
+                Ok(t) => {
+                    tracing::info!(
+                        target: "atlas::lockprof",
+                        "process_decode_logits n={n} fast_path argmax={:.2}ms",
+                        lockprof_sample_t0.elapsed().as_micros() as f64 / 1000.0,
+                    );
+                    t.into_iter().map(|tok| (tok, None)).collect()
+                }
                 Err(e) => {
                     tracing::error!("argmax_batch error: {e:#}");
                     for mut a in active.drain(..) {
@@ -127,6 +152,7 @@ pub fn process_decode_logits(
         );
     }
 
+    let lockprof_per_tok_t0 = std::time::Instant::now();
     let now = Instant::now();
     for (i, (tok, logprobs)) in new_tokens.into_iter().enumerate() {
         let a = &mut active[i];
@@ -534,4 +560,9 @@ pub fn process_decode_logits(
             }
         }
     }
+    tracing::info!(
+        target: "atlas::lockprof",
+        "process_decode_logits n={n} per_tok_loop={:.2}ms",
+        lockprof_per_tok_t0.elapsed().as_micros() as f64 / 1000.0,
+    );
 }
