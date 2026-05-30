@@ -29,6 +29,7 @@ mod prefill_b;
 mod prefill_c;
 mod prefill_d;
 mod sequence;
+mod slot_ptrs;
 mod speculative;
 mod verify_a;
 mod verify_b;
