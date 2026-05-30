@@ -16,6 +16,21 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
+        // Phase IIc-2: route to the grouped FP8 expert path when
+        // ATLAS_MOE_GROUPED_MIN is satisfied and FP8 weights are loaded.
+        // This amortises the per-expert weight read across the N positions
+        // that picked it — the dominant cost at decode shape (per-token
+        // profile showed ~14 ms/tick going to expert dispatch at N=4).
+        // Default threshold matches forward_prefill's 64.
+        if self.fp8_gate_weight_ptrs.is_some() && self.moe_fp8_grouped_gemm_k.0 != 0 {
+            let threshold: usize = std::env::var("ATLAS_MOE_GROUPED_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(64);
+            if num_tokens > threshold {
+                return self.forward_prefill_fp8(input, num_tokens, ctx, stream);
+            }
+        }
         let h = ctx.config.hidden_size as u32;
         let inter = ctx.config.moe_intermediate_size as u32;
         let num_experts = ctx.config.num_experts as u32;

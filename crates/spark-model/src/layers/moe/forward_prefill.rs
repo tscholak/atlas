@@ -21,11 +21,20 @@ impl MoeLayer {
         ctx: &ForwardContext,
         stream: u64,
     ) -> Result<()> {
-        // FP8 experts: use grouped GEMM for long prefills (>64 tokens),
+        // FP8 experts: use grouped GEMM for long prefills (>threshold tokens),
         // fall back to per-token fused GEMV for short prefills where
         // the GEMM launch overhead exceeds the bandwidth savings.
+        // Threshold defaults to 64 (originally tuned for prefill);
+        // ATLAS_MOE_GROUPED_MIN overrides at runtime so we can experiment
+        // with decode shapes where N is small (2..8) but per-token expert
+        // dispatch dominates the wall — the grouped path's per-expert
+        // weight amortisation may already win there.
         if self.fp8_gate_weight_ptrs.is_some() {
-            if self.moe_fp8_grouped_gemm_k.0 != 0 && num_tokens > 64 {
+            let threshold: usize = std::env::var("ATLAS_MOE_GROUPED_MIN")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(64);
+            if self.moe_fp8_grouped_gemm_k.0 != 0 && num_tokens > threshold {
                 return self.forward_prefill_fp8(input, num_tokens, ctx, stream);
             }
             return self.forward_batched(input, num_tokens, ctx, stream);
