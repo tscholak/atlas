@@ -162,12 +162,22 @@ impl Qwen3SsmLayer {
             w4a16_gemv_batch3_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch3")?,
             gdn_wy2_k: gpu.kernel("gated_delta_rule_wy", "gated_delta_rule_wy2")?,
             gdn_wy3_k: gpu.kernel("gated_delta_rule_wy3", "gated_delta_rule_wy3")?,
+            gdn_wy2_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy",
+                "gated_delta_rule_wy2_batched",
+            ),
             gdn_wy3_batched_k: super::super::try_kernel(
                 gpu,
                 "gated_delta_rule_wy3",
                 "gated_delta_rule_wy3_batched",
             ),
             gdn_wy4_k: gpu.kernel("gated_delta_rule_wy4", "gated_delta_rule_wy4")?,
+            gdn_wy4_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule_wy4",
+                "gated_delta_rule_wy4_batched",
+            ),
             // wy17 only present in qwen3.6-35b-a3b's PTX module set; NULL on other targets.
             // decode_batched(K=17) checks for non-NULL before dispatching the fused path.
             gdn_wy17_k: super::super::try_kernel(

@@ -120,13 +120,16 @@ pub struct Qwen3SsmLayer {
     gdn_wy2_k: KernelHandle,
     gdn_wy3_k: KernelHandle,
     gdn_wy4_k: KernelHandle,
-    /// Batched-pool variant of `gdn_wy3_k`. Reads main h_state + 2
-    /// intermediates from three per-batch slot-pointer arrays staged by
-    /// the caller. Used by the Phase IIb batched verify dispatcher at
-    /// K=3. `KernelHandle(0)` when the model PTX module doesn't yet
-    /// include the `_batched` entry point (Phase IIa rollout is
-    /// per-model).
+    /// Batched-pool variants of `gdn_wy{2,3,4}_k`. Each reads its main
+    /// h_state plus (K-1) intermediate slots from per-batch slot-pointer
+    /// arrays staged by the caller. Phase IIb's batched verify
+    /// dispatcher dispatches one of these per layer per K depending on
+    /// the seq batch's MTP K_max. `KernelHandle(0)` when the model PTX
+    /// module doesn't yet include the corresponding `_batched` entry
+    /// (Phase IIa rollout is per-model).
+    gdn_wy2_batched_k: KernelHandle,
     gdn_wy3_batched_k: KernelHandle,
+    gdn_wy4_batched_k: KernelHandle,
     /// WY-Chunkwise K=17 GDN verify (DFlash γ+1). Only present in
     /// qwen3.6-35b-a3b's PTX module set; NULL handle for other targets,
     /// in which case decode_batched(K=17) falls through to the sequential

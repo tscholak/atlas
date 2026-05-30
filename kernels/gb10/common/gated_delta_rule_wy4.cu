@@ -14,6 +14,34 @@
 
 // Reduction primitives (atlas_block_reduce_sum) from gdn_reduce.cuh match
 // the per-token baseline bit-exactly.
+//
+// Two entry points share the inline body below (see decode kernel comment
+// for the design rationale). `gated_delta_rule_wy4` keeps the original
+// contiguous-buffer interface used by N=1 single-seq K=4 verify;
+// `gated_delta_rule_wy4_batched` takes per-batch pointer arrays for the
+// Phase IIb batched verify path (4 arrays: main state + 3 intermediates).
+static __device__ __forceinline__ void gated_delta_rule_wy4_body(
+    float* __restrict__ H,
+    float* __restrict__ Hi0,
+    float* __restrict__ Hi1,
+    float* __restrict__ Hi2,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int vh,
+    unsigned int kh,
+    unsigned int tid,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+);
 
 extern "C" __global__ void gated_delta_rule_wy4(
     float* __restrict__ h_state,
@@ -48,7 +76,78 @@ extern "C" __global__ void gated_delta_rule_wy4(
     float* Hi0 = h_state_inter0 + ((b * num_v_heads + vh) * hv);
     float* Hi1 = h_state_inter1 + ((b * num_v_heads + vh) * hv);
     float* Hi2 = h_state_inter2 + ((b * num_v_heads + vh) * hv);
+    gated_delta_rule_wy4_body(
+        H, Hi0, Hi1, Hi2, query, key, value, gate, beta, output,
+        b, vh, kh, tid, num_v_heads, k_dim, v_dim,
+        qk_stride, v_stride, gb_stride
+    );
+}
 
+extern "C" __global__ void gated_delta_rule_wy4_batched(
+    float* const* __restrict__ h_state_ptrs,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    float* const* __restrict__ h_state_inter0_ptrs,
+    float* const* __restrict__ h_state_inter1_ptrs,
+    float* const* __restrict__ h_state_inter2_ptrs,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int hr = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / hr;
+    const unsigned int hv = k_dim * v_dim;
+
+    // Per-batch slot resolution — caller stages four pointer arrays
+    // (main + 3 intermediates) ahead of the launch.
+    float* H   = h_state_ptrs[b]         + vh * hv;
+    float* Hi0 = h_state_inter0_ptrs[b]  + vh * hv;
+    float* Hi1 = h_state_inter1_ptrs[b]  + vh * hv;
+    float* Hi2 = h_state_inter2_ptrs[b]  + vh * hv;
+    gated_delta_rule_wy4_body(
+        H, Hi0, Hi1, Hi2, query, key, value, gate, beta, output,
+        b, vh, kh, tid, num_v_heads, k_dim, v_dim,
+        qk_stride, v_stride, gb_stride
+    );
+}
+
+static __device__ __forceinline__ void gated_delta_rule_wy4_body(
+    float* __restrict__ H,
+    float* __restrict__ Hi0,
+    float* __restrict__ Hi1,
+    float* __restrict__ Hi2,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int vh,
+    unsigned int kh,
+    unsigned int tid,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+) {
+    const unsigned int hv = k_dim * v_dim;
     // Token pointers.
     // Gate clamp MUST match per-token gated_delta_rule_decode to keep WY
     // outputs numerically consistent with single-token decode across MTP

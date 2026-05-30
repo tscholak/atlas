@@ -120,6 +120,54 @@ pub fn gdn_decode_wy2(
         .launch(stream)
 }
 
+/// Batched-pool variant of [`gdn_decode_wy2`]. Takes two per-batch
+/// pointer arrays: main h_state slot and the single K=2 intermediate
+/// slot. Inputs/outputs stay contiguous per batch as in the single-buffer
+/// variant.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_decode_wy2_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state_ptrs: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    h_state_intermediate_ptrs: DevicePtr,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .arg_ptr(h_state_ptrs)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_ptr(h_state_intermediate_ptrs)
+        .arg_u32(batch_size)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
 /// WY-chunkwise 3-token GDN decode (2-pass algorithm).
 ///
 /// Drop-in replacement for `gdn_decode_chunk3`. All 3 H^T @ k_t dot products
@@ -272,6 +320,57 @@ pub fn gdn_decode_wy4(
         .arg_ptr(h_state_inter0)
         .arg_ptr(h_state_inter1)
         .arg_ptr(h_state_inter2)
+        .arg_u32(batch_size)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
+/// Batched-pool variant of [`gdn_decode_wy4`]. Takes four per-batch
+/// pointer arrays: main h_state + 3 K=4 intermediates. Inputs/outputs
+/// stay contiguous per batch as in the single-buffer variant.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_decode_wy4_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state_ptrs: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    h_state_inter0_ptrs: DevicePtr,
+    h_state_inter1_ptrs: DevicePtr,
+    h_state_inter2_ptrs: DevicePtr,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .arg_ptr(h_state_ptrs)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_ptr(h_state_inter0_ptrs)
+        .arg_ptr(h_state_inter1_ptrs)
+        .arg_ptr(h_state_inter2_ptrs)
         .arg_u32(batch_size)
         .arg_u32(num_k_heads)
         .arg_u32(num_v_heads)

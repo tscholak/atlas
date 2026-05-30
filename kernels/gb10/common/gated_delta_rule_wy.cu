@@ -27,6 +27,32 @@
 // ============================================================
 // WY2: 2-pass K=2 verification (replaces chunk2)
 // ============================================================
+// Two entry points share the inline body below — see the decode kernel
+// comment for the design rationale. `gated_delta_rule_wy2` keeps the
+// original contiguous-buffer interface used by N=1 single-seq verify;
+// `gated_delta_rule_wy2_batched` takes per-batch pointer arrays for the
+// Phase IIb batched verify path.
+static __device__ __forceinline__ void gated_delta_rule_wy2_body(
+    float* __restrict__ H,
+    float* __restrict__ H_inter,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int vh,
+    unsigned int kh,
+    unsigned int tid,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+);
+
 extern "C" __global__ void gated_delta_rule_wy2(
     float* __restrict__ h_state,
     const __nv_bfloat16* __restrict__ query,
@@ -54,9 +80,73 @@ extern "C" __global__ void gated_delta_rule_wy2(
     const unsigned int kh = vh / head_repeat;
 
     const unsigned int hv_size = k_dim * v_dim;
-    float* H = h_state + ((b * num_v_heads + vh) * hv_size);
+    float* H       = h_state              + ((b * num_v_heads + vh) * hv_size);
     float* H_inter = h_state_intermediate + ((b * num_v_heads + vh) * hv_size);
+    gated_delta_rule_wy2_body(
+        H, H_inter, query, key, value, gate, beta, output,
+        b, vh, kh, tid, num_v_heads, k_dim, v_dim,
+        qk_stride, v_stride, gb_stride
+    );
+}
 
+extern "C" __global__ void gated_delta_rule_wy2_batched(
+    float* const* __restrict__ h_state_ptrs,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    float* const* __restrict__ h_state_intermediate_ptrs,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    const unsigned int hv_size = k_dim * v_dim;
+    // Per-batch slot resolution: `_ptrs[b]` points at the b-th seq's
+    // pool slot; offset within the slot by `vh * hv_size` for this head.
+    float* H       = h_state_ptrs[b]              + vh * hv_size;
+    float* H_inter = h_state_intermediate_ptrs[b] + vh * hv_size;
+    gated_delta_rule_wy2_body(
+        H, H_inter, query, key, value, gate, beta, output,
+        b, vh, kh, tid, num_v_heads, k_dim, v_dim,
+        qk_stride, v_stride, gb_stride
+    );
+}
+
+static __device__ __forceinline__ void gated_delta_rule_wy2_body(
+    float* __restrict__ H,
+    float* __restrict__ H_inter,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int vh,
+    unsigned int kh,
+    unsigned int tid,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+) {
     // Token pointers
     const __nv_bfloat16* q0 = query + (b * 2) * qk_stride + kh * k_dim;
     const __nv_bfloat16* k0 = key   + (b * 2) * qk_stride + kh * k_dim;
