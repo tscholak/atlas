@@ -167,7 +167,6 @@ impl Qwen3SsmLayer {
         let bf16 = 2usize;
         let fp32 = 4usize;
         let eps = ctx.config.rms_norm_eps as f32;
-        let residual_elem = if ctx.config.use_fp32_residual() { 4 } else { 2 };
 
         let nk = ctx.config.linear_num_key_heads;
         let kd = ctx.config.linear_key_head_dim;
@@ -459,45 +458,53 @@ impl Qwen3SsmLayer {
             }
         }
 
-        // ── Phase 7: per-seq residual + post-norm + MoE + residual_add ──
-        // Bug #6 mitigation: MoE writes its output to `moe_output[0..h]`
-        // (single-token MoE doesn't know about batch). Copy each seq's
-        // SSM out to `ssm_out_safe` BEFORE running MoE so the per-seq
-        // residual_add_rms_norm reads the right SSM result.
+        // ── Phase 7: BATCHED residual + post-norm + MoE + residual_add ──
+        //
+        // Phase 6 left the per-seq SSM out_proj results at moe_output[0..n*h].
+        // We first D2D-copy them to `ssm_out_safe` so the MoE call (which
+        // writes back into moe_output) doesn't clobber its own inputs.
+        // Then everything below runs as a single batched call at M=N.
+        //
+        // Phase IIc-1 (this commit): the prior version of this code
+        // looped per-seq, paying N separate kernel launches AND N
+        // separate weight reads for residual_add_rms_norm, MoE, and
+        // residual_add. The MoE weight read in particular is the
+        // dominant per-tick cost at decode (40 layers × top_k experts
+        // × ~1.5M params/expert ≈ 1.7 GB FP8 per token), so amortising
+        // it across N positions is the single biggest decode-time win
+        // available; profiling at N=4 showed tick time scaling linearly
+        // with N (24/46/93 ms at N=1/2/4) entirely because of this.
         let ssm_out_safe = ctx.buffers.ssm_deinterleaved(); // reuse — no longer needed
-        for i in 0..n {
-            let src = moe_output.offset(i * h * bf16);
-            let dst = ssm_out_safe.offset(i * h * bf16);
-            ctx.gpu.copy_d2d_async(src, dst, h * bf16, stream)?;
-        }
-        for i in 0..n {
-            let hidden_i = hidden.offset(i * h * residual_elem);
-            let ssm_out_i = ssm_out_safe.offset(i * h * bf16);
-            let residual_i = residual.offset(i * h * residual_elem);
-            let normed2 = ctx.buffers.norm_output().offset(i * h * bf16);
-            ops::residual_add_rms_norm(
-                ctx.gpu,
-                self.residual_add_rms_norm_k,
-                hidden_i,
-                ssm_out_i,
-                &self.post_attn_norm,
-                normed2,
-                residual_i,
-                1,
-                h as u32,
-                eps,
-                stream,
-            )?;
-            let moe_out = self.ffn.forward(normed2, ctx, stream)?;
-            ops::residual_add(
-                ctx.gpu,
-                self.residual_add_k,
-                hidden_i,
-                moe_out,
-                h as u32,
-                stream,
-            )?;
-        }
+        ctx.gpu.copy_d2d_async(moe_output, ssm_out_safe, n * h * bf16, stream)?;
+        let normed2_batched = ctx.buffers.norm_output();
+        ops::residual_add_rms_norm(
+            ctx.gpu,
+            self.residual_add_rms_norm_k,
+            hidden,
+            ssm_out_safe,
+            &self.post_attn_norm,
+            normed2_batched,
+            residual,
+            n as u32,
+            h as u32,
+            eps,
+            stream,
+        )?;
+        // FFN at M=N. MoE writes its [N, h] outputs into moe_output;
+        // dense FFN writes into its own buffer and forward_batched
+        // returns the destination via internal aliasing — both end up
+        // at moe_output[0..n*h] for the residual_add below.
+        self.ffn.forward_batched(normed2_batched, n, ctx, stream)?;
+        // Flat residual_add over the n*h-element window (matches the
+        // [N, h] layout of both `hidden` and `moe_output`).
+        ops::residual_add(
+            ctx.gpu,
+            self.residual_add_k,
+            hidden,
+            moe_output,
+            (n * h) as u32,
+            stream,
+        )?;
 
         Ok(())
     }
