@@ -163,6 +163,57 @@ pub fn gdn_prefill(
         .launch(stream)
 }
 
+/// Batched-pool variant of [`gdn_prefill`]. Reads/writes h_state per
+/// batch from `h_state_ptrs` (a small device buffer holding
+/// `batch_size * 8` bytes of `float*`). Used by Phase IIc's true
+/// batched prefill_batch_chunk_dispatch: with this kernel, the
+/// per-layer SSM forward over N concurrent prefill streams becomes a
+/// single launch instead of the current sequential per-stream loop.
+#[allow(clippy::too_many_arguments)]
+pub fn gdn_prefill_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state_ptrs: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    batch_size: u32,
+    seq_len: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .shared_mem(4 * k_dim * 4) // double-buffered k[128]+q[128] × 2 buffers × 4 bytes
+        .arg_ptr(h_state_ptrs)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(seq_len)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .launch(stream)
+}
+
 /// Split-v_dim prefill: 2 CTAs per v-head, 64 threads each.
 ///
 /// Kernel: `gated_delta_rule_prefill_split(h_state, query, key, value,

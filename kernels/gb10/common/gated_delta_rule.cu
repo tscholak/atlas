@@ -601,6 +601,33 @@ extern "C" __global__ void gated_delta_rule_chunk2(
 // Block: (BLOCK_SIZE, 1, 1)
 //
 // Each block handles one (batch, head) pair across all seq positions.
+//
+// Two entry points share the inline body below (see decode kernel comment
+// for the design rationale). `gated_delta_rule_prefill` keeps the
+// original contiguous-buffer interface; `gated_delta_rule_prefill_batched`
+// takes a per-batch pointer array for Phase IIc's batched prefill path
+// (`prefill_batch_chunk_dispatch`'s currently-sequential SSM forward).
+static __device__ __forceinline__ void gated_delta_rule_prefill_body(
+    float* __restrict__ H_global,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int vh,
+    unsigned int kh,
+    unsigned int tid,
+    unsigned int seq_len,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+);
+
 extern "C" __global__ void gated_delta_rule_prefill(
     // State (in/out): [batch, num_v_heads, k_dim, v_dim] FP32
     float* __restrict__ h_state,
@@ -633,12 +660,80 @@ extern "C" __global__ void gated_delta_rule_prefill(
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
 
+    // Single contiguous buffer — b indexes batch with stride
+    // `num_v_heads * k_dim * v_dim`. The body cooperatively loads H from
+    // this address into shared memory, processes all `seq_len` tokens
+    // with H in shared, then writes back at the end.
+    float* H_global = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
+    gated_delta_rule_prefill_body(
+        H_global, query, key, value, gate, beta, output,
+        b, vh, kh, tid, seq_len, num_v_heads, k_dim, v_dim,
+        qk_stride, v_stride, gb_stride
+    );
+}
+
+extern "C" __global__ void gated_delta_rule_prefill_batched(
+    float* const* __restrict__ h_state_ptrs,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int seq_len,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    // Per-batch slot resolution — `h_state_ptrs[b]` is the b-th seq's
+    // SsmStatePool slot; we offset by `vh * k_dim * v_dim` for this
+    // block's head. Both the cooperative load (start of kernel) and the
+    // write-back (end of kernel) read/write through this pointer, so
+    // both ends of the kernel benefit from per-batch slot indexing.
+    float* H_global = h_state_ptrs[b] + vh * k_dim * v_dim;
+    gated_delta_rule_prefill_body(
+        H_global, query, key, value, gate, beta, output,
+        b, vh, kh, tid, seq_len, num_v_heads, k_dim, v_dim,
+        qk_stride, v_stride, gb_stride
+    );
+}
+
+static __device__ __forceinline__ void gated_delta_rule_prefill_body(
+    float* __restrict__ H_global,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int vh,
+    unsigned int kh,
+    unsigned int tid,
+    unsigned int seq_len,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride
+) {
     // H state in dynamic shared memory: [k_dim, v_dim] FP32
     // Allocated via launch parameter (k_dim * v_dim * 4 bytes = 64KB for 128×128)
     extern __shared__ float H_smem[];
-
-    // Global H state pointer for this (batch, head)
-    float* H_global = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
 
     // Cooperatively load H from global → shared memory
     // 128 threads, 16384 elements → 128 elements per thread

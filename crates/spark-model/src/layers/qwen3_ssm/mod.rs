@@ -91,6 +91,12 @@ pub struct Qwen3SsmLayer {
     w4a16_gemv_batch2_k: KernelHandle,
     dense_gemm_k: KernelHandle,
     gdn_prefill_k: KernelHandle,
+    /// Batched-pool variant of `gdn_prefill_k`. Reads/writes h_state via
+    /// per-batch slot pointer array. Phase IIc replaces
+    /// `prefill_batch_chunk_dispatch`'s sequential SSM forward with a
+    /// single launch of this kernel. `KernelHandle(0)` when the PTX
+    /// module doesn't yet have the `_batched` entry point.
+    gdn_prefill_batched_k: KernelHandle,
     gdn_prefill_split_k: KernelHandle,
     gdn_prefill_split4_k: KernelHandle,
     gdn_prefill_persistent_k: KernelHandle,

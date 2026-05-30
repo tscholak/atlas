@@ -113,6 +113,11 @@ impl Qwen3SsmLayer {
             w4a16_gemv_batch2_k: gpu.kernel("w4a16_gemv", "w4a16_gemv_batch2")?,
             dense_gemm_k: gpu.kernel("gemm", "dense_gemm_bf16")?,
             gdn_prefill_k: gpu.kernel("gated_delta_rule", "gated_delta_rule_prefill")?,
+            gdn_prefill_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_prefill_batched",
+            ),
             gdn_prefill_split_k: gpu
                 .kernel("gated_delta_rule", "gated_delta_rule_prefill_split")?,
             gdn_prefill_split4_k: gpu
