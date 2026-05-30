@@ -304,6 +304,28 @@ pub trait Model: Send + Sync {
         stream: u64,
     ) -> Result<[u32; 3]>;
 
+    /// Batched K=3 verify across N concurrent sequences. Returns N
+    /// arrays of 3 argmax IDs (one per seq). Each seq's intermediates
+    /// land in its own pool slot — the scheduler's per-seq commit logic
+    /// then picks the right (slot, intermediate) per accept-count.
+    ///
+    /// Falls back to N sequential calls to `decode_verify_graphed_k3`
+    /// in the default impl; concrete models override to dispatch one
+    /// batched-kernel verify for the whole group (Phase IIb path).
+    fn decode_verify_batched_k3(
+        &self,
+        per_seq_tokens: &[[u32; 3]],
+        seqs: &mut [&mut SequenceState],
+        stream: u64,
+    ) -> Result<Vec<[u32; 3]>> {
+        assert_eq!(per_seq_tokens.len(), seqs.len());
+        let mut out = Vec::with_capacity(seqs.len());
+        for (tokens, seq) in per_seq_tokens.iter().zip(seqs.iter_mut()) {
+            out.push(self.decode_verify_graphed_k3(tokens, seq, stream)?);
+        }
+        Ok(out)
+    }
+
     /// CUDA-graphed K=4 verify (1 verified + 3 drafts). Returns 4 argmax IDs.
     /// SSM intermediates [0..3] saved for partial rollback.
     fn decode_verify_graphed_k4(

@@ -443,4 +443,42 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+
+    /// Whether this layer can run a Phase IIb batched K=3 verify
+    /// (`verify_batched_k3` below). SSM layers return true when their
+    /// `gdn_decode_wy3_batched_k` + `conv1d_l2norm_batched_k` kernel
+    /// handles are loaded; attention layers (FullAttention) don't reach
+    /// the verify_batched_k3 layer call — the model dispatcher routes
+    /// attention layers through `decode_multi_seq` directly.
+    /// Default: false (older layer impls and attention layers).
+    fn verify_batched_k3_supported(&self) -> bool {
+        false
+    }
+
+    /// Run this SSM layer's verify_batched K=3 pass for N concurrent
+    /// sequences. Reads `hidden[0..N*K*hidden_size]` (laid out as
+    /// `[seq_i, tok_t, hidden]`), writes back into the same buffer.
+    /// `h_state_ptrs` / `conv_state_ptrs` / `h_inter0_ptrs` /
+    /// `h_inter1_ptrs` are pre-staged device arrays of `N` slot-base
+    /// pointers from `stage_slot_ptrs_dispatch`. Default impl bails —
+    /// only SSM layers that have the Phase IIa `_batched` kernels and
+    /// the Phase IIb wiring override this.
+    fn verify_batched_k3(
+        &self,
+        _hidden: DevicePtr,
+        _residual: DevicePtr,
+        _batch_size: u32,
+        _h_state_ptrs: DevicePtr,
+        _conv_state_ptrs: DevicePtr,
+        _h_inter0_ptrs: DevicePtr,
+        _h_inter1_ptrs: DevicePtr,
+        _kv_cache: &mut PagedKvCache,
+        _ctx: &ForwardContext,
+        _stream: u64,
+    ) -> Result<()> {
+        anyhow::bail!(
+            "verify_batched_k3 is not implemented for this layer; \
+             caller should bail out of the batched verify path."
+        )
+    }
 }

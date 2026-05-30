@@ -33,6 +33,7 @@ mod slot_ptrs;
 mod speculative;
 mod verify_a;
 mod verify_b;
+mod verify_batched_k3;
 mod verify_c;
 mod verify_c2;
 mod verify_d;
@@ -223,6 +224,27 @@ impl Model for TransformerModel {
         _stream: u64,
     ) -> Result<[u32; 3]> {
         self.decode_verify_graphed_k3_dispatch(tokens, seq, _stream)
+    }
+    fn decode_verify_batched_k3(
+        &self,
+        per_seq_tokens: &[[u32; 3]],
+        seqs: &mut [&mut SequenceState],
+        stream: u64,
+    ) -> Result<Vec<[u32; 3]>> {
+        // Try the batched dispatch; fall back to the trait's default
+        // (N sequential single-seq decode_verify_graphed_k3 calls) when
+        // the layer's batched verify isn't implemented yet. Equivalent
+        // to Phase I behaviour during the rollout window.
+        match self.decode_verify_batched_k3_dispatch(per_seq_tokens, seqs, stream) {
+            Ok(v) => Ok(v),
+            Err(_) => {
+                let mut out = Vec::with_capacity(seqs.len());
+                for (tokens, seq) in per_seq_tokens.iter().zip(seqs.iter_mut()) {
+                    out.push(self.decode_verify_graphed_k3(tokens, seq, stream)?);
+                }
+                Ok(out)
+            }
+        }
     }
     fn decode_verify_graphed_k4(
         &self,
