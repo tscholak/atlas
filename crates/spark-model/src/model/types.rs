@@ -118,6 +118,19 @@ pub struct TransformerModel {
     /// Layer indices to capture for DFlash. Empty when DFlash is disabled.
     /// Sourced from drafter's `dflash_config.target_layer_ids` at model build.
     pub(super) dflash_capture_layers: Vec<usize>,
+    /// Staging buffer for per-batch SSM slot pointer arrays. Layout is
+    /// `[num_kinds × num_ssm_layers × max_batch_size]` of `float*`
+    /// pointers, where `num_kinds` counts the distinct address arrays a
+    /// batched SSM call may need in one launch (h_state, conv_state, and
+    /// per-intermediate-index variants used by K-verify kernels).
+    /// Callers compute an offset within this single allocation per
+    /// (kind, layer) before each launch, write the `batch_size` slot-
+    /// base pointers there, and pass the resulting `DevicePtr` to the
+    /// batched ops wrapper. The pointee values change per launch; CUDA
+    /// graphs capture the offset addresses, so replay reads whatever
+    /// values were written most recently. See `gdn_decode_batched` and
+    /// the Phase IIa kernel refactor for the indexing convention.
+    pub(super) slot_ptrs_buf: DevicePtr,
     /// Cached CUDA graphs for K=2 verification, **keyed by `seq.slot_idx`**.
     /// Same rationale as `decode_graph`: the captured graph has SSM
     /// h_state/conv_state pointers baked in as kernel arguments, so replay for

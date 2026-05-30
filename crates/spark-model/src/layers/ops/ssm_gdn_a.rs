@@ -56,6 +56,58 @@ pub fn gdn_decode(
         .launch(stream)
 }
 
+/// Batched-pool variant of [`gdn_decode`]. Reads/writes h_state per-batch
+/// from a GPU array of `batch_size` slot-base pointers staged by the caller
+/// into `h_state_ptrs` (a small device buffer holding `batch_size * 8`
+/// bytes of `float*`). The kernel offsets within each slot by `vh * k_dim
+/// * v_dim` for the current value head. All other args are identical to
+/// [`gdn_decode`] — `query`/`key`/`value`/`gate`/`beta`/`output` remain
+/// contiguous per batch.
+///
+/// Kernel: `gated_delta_rule_decode_batched(h_state_ptrs, query, key,
+///          value, gate, beta, output, batch_size, num_k_heads,
+///          num_v_heads, k_dim, v_dim)`
+/// Grid: (num_v_heads, batch_size, 1)  Block: (128, 1, 1)
+///
+/// Used by the batched verify path (Phase IIb) and batched prefill
+/// (Phase IIc) where active sequences live at non-contiguous slot indices
+/// in `SsmStatePool` (because the scheduler's `active` vec is in prefill-
+/// finish order, not slot-claim order).
+pub fn gdn_decode_batched(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    h_state_ptrs: DevicePtr,
+    query: DevicePtr,
+    key: DevicePtr,
+    value: DevicePtr,
+    gate: DevicePtr,
+    beta: DevicePtr,
+    output: DevicePtr,
+    batch_size: u32,
+    num_k_heads: u32,
+    num_v_heads: u32,
+    k_dim: u32,
+    v_dim: u32,
+    stream: u64,
+) -> Result<()> {
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_v_heads, batch_size, 1])
+        .block([128, 1, 1])
+        .arg_ptr(h_state_ptrs)
+        .arg_ptr(query)
+        .arg_ptr(key)
+        .arg_ptr(value)
+        .arg_ptr(gate)
+        .arg_ptr(beta)
+        .arg_ptr(output)
+        .arg_u32(batch_size)
+        .arg_u32(num_k_heads)
+        .arg_u32(num_v_heads)
+        .arg_u32(k_dim)
+        .arg_u32(v_dim)
+        .launch(stream)
+}
+
 /// Gated delta rule prefill (multi-token, sequential SSM update within kernel).
 ///
 /// Processes `seq_len` tokens sequentially per (batch, head) pair.

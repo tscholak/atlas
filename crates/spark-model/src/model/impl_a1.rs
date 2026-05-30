@@ -214,6 +214,20 @@ impl TransformerModel {
         // MTP hidden state save buffer (1 × hidden_size FP32)
         let mtp_hidden_save = gpu.alloc(config.hidden_size * 4)?;
 
+        // Staging for per-batch SSM slot pointer arrays — see
+        // `types.rs::slot_ptrs_buf` doc. Sized for the maximum simultaneous
+        // need: `SLOT_PTRS_NUM_KINDS` distinct pointer arrays per layer
+        // (h_state + conv_state + up to `K_VERIFY_MAX - 1` intermediates),
+        // across all SSM layers, with `max_batch_size` pointers each. Each
+        // pointer is 8 bytes (host pointer size on this architecture; we
+        // rely on the standard `sizeof(void*) == 8` assumption that the
+        // rest of atlas already makes for `arg_ptr` packing).
+        const SLOT_PTRS_NUM_KINDS: usize = 16;
+        let num_ssm_layers = config.num_ssm_layers();
+        let slot_ptrs_total_bytes =
+            SLOT_PTRS_NUM_KINDS * num_ssm_layers.max(1) * max_batch_size * 8;
+        let slot_ptrs_buf = gpu.alloc(slot_ptrs_total_bytes)?;
+
         // DFlash 5-layer hidden-state stack. Allocated only when a
         // BlockDiffusionDraftHead is the active proposer (`config.dflash_capture_layers`
         // populated by the loader from the drafter's `dflash_config.target_layer_ids`).
@@ -456,6 +470,7 @@ impl TransformerModel {
             mtp_hidden_save,
             dflash_hidden_save,
             dflash_capture_layers,
+            slot_ptrs_buf,
             verify2_graph: Mutex::new(std::collections::HashMap::new()),
             verify3_graph: Mutex::new(std::collections::HashMap::new()),
             verify4_graph: Mutex::new(std::collections::HashMap::new()),

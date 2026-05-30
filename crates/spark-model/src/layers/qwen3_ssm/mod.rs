@@ -65,6 +65,14 @@ pub struct Qwen3SsmLayer {
     conv1d_l2norm_f32_k: KernelHandle,
     gdn_k: KernelHandle,
     gdn_f32_k: KernelHandle,
+    /// Batched-pool variant of `gdn_k`. Reads h_state via a per-batch
+    /// array of slot-base pointers staged by the caller. Used by the
+    /// batched verify (Phase IIb) and batched decode (Phase IIc) paths
+    /// when active sequences live at non-contiguous slot indices.
+    /// Optional: `KernelHandle(0)` when the kernel isn't compiled into
+    /// the current model's PTX module (older models without the
+    /// `_batched` entry point).
+    gdn_batched_k: KernelHandle,
     ba_gates_k: KernelHandle,
     residual_add_k: KernelHandle,
     l2_norm_k: KernelHandle,

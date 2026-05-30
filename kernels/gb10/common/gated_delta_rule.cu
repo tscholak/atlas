@@ -57,6 +57,46 @@
 // State layout: H[k_dim, v_dim] — v_dim is contiguous (fast dimension).
 // Thread tid maps to v_dim index tid. All threads in a warp access
 // consecutive addresses → perfectly coalesced memory access.
+//
+// Two entry points share the inline body below:
+//   gated_delta_rule_decode          — h_state is one contiguous buffer
+//                                      with implicit batch stride of
+//                                      `num_v_heads * k_dim * v_dim`.
+//                                      Used for N=1 single-seq decode
+//                                      where the caller passes a single
+//                                      slot's h_state directly.
+//   gated_delta_rule_decode_batched  — h_state_ptrs[b] is a per-batch
+//                                      pointer to the b-th seq's slot in
+//                                      `SsmStatePool`. Slots can come
+//                                      from arbitrary non-contiguous
+//                                      positions in the pool (atlas's
+//                                      `active` vec is in prefill-finish
+//                                      order, not slot-claim order).
+//                                      Used for batched verify (Phase IIb)
+//                                      and batched prefill (Phase IIc).
+//
+// The body operates on a single resolved (slot, head) H pointer plus the
+// batched input tensors (which are always laid out per-batch contiguously
+// by the caller). Inputs/outputs use `b * stride + ...` indexing because
+// they're contiguous per batch; only state lives in the slot-indexed pool.
+static __device__ __forceinline__ void gated_delta_rule_decode_body(
+    float* __restrict__ H,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int vh,
+    unsigned int kh,
+    unsigned int tid,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim
+);
+
 extern "C" __global__ void gated_delta_rule_decode(
     // State (in/out): [batch, num_v_heads, k_dim, v_dim] FP32
     float* __restrict__ h_state,
@@ -76,18 +116,77 @@ extern "C" __global__ void gated_delta_rule_decode(
     unsigned int k_dim,
     unsigned int v_dim
 ) {
-    const unsigned int vh = blockIdx.x;    // value head index
-    const unsigned int b = blockIdx.y;     // batch index
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
     if (vh >= num_v_heads || b >= batch_size) return;
 
     const unsigned int tid = threadIdx.x;
-
-    // Map value head to key head (head_repeat = num_v_heads / num_k_heads)
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
 
-    // H is [k_dim, v_dim] with v_dim contiguous — tid indexes v_dim
+    // Single contiguous h_state buffer — b indexes the batch with stride
+    // (num_v_heads * k_dim * v_dim).
     float* H = h_state + ((b * num_v_heads + vh) * k_dim * v_dim);
+    gated_delta_rule_decode_body(
+        H, query, key, value, gate, beta, output,
+        b, vh, kh, tid, num_k_heads, num_v_heads, k_dim, v_dim
+    );
+}
+
+// Batched-pool variant: h_state_ptrs[b] points to the b-th seq's slot in
+// SsmStatePool (each slot is a contiguous [num_v_heads, k_dim, v_dim]
+// block, so we offset by `vh * k_dim * v_dim` within the slot for this
+// block's head). All other args are identical to the single-buffer entry.
+extern "C" __global__ void gated_delta_rule_decode_batched(
+    float* const* __restrict__ h_state_ptrs,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int batch_size,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim
+) {
+    const unsigned int vh = blockIdx.x;
+    const unsigned int b = blockIdx.y;
+    if (vh >= num_v_heads || b >= batch_size) return;
+
+    const unsigned int tid = threadIdx.x;
+    const unsigned int head_repeat = num_v_heads / num_k_heads;
+    const unsigned int kh = vh / head_repeat;
+
+    // Per-slot h_state — the caller has staged batch_size pointers into
+    // h_state_ptrs ahead of the launch, each pointing at the matching
+    // seq's pool slot. Slot data is laid out [num_v_heads, k_dim, v_dim]
+    // so we offset by `vh * k_dim * v_dim` within the slot.
+    float* H = h_state_ptrs[b] + vh * k_dim * v_dim;
+    gated_delta_rule_decode_body(
+        H, query, key, value, gate, beta, output,
+        b, vh, kh, tid, num_k_heads, num_v_heads, k_dim, v_dim
+    );
+}
+
+static __device__ __forceinline__ void gated_delta_rule_decode_body(
+    float* __restrict__ H,
+    const __nv_bfloat16* __restrict__ query,
+    const __nv_bfloat16* __restrict__ key,
+    const __nv_bfloat16* __restrict__ value,
+    const float* __restrict__ gate,
+    const float* __restrict__ beta,
+    __nv_bfloat16* __restrict__ output,
+    unsigned int b,
+    unsigned int vh,
+    unsigned int kh,
+    unsigned int tid,
+    unsigned int num_k_heads,
+    unsigned int num_v_heads,
+    unsigned int k_dim,
+    unsigned int v_dim
+) {
     const __nv_bfloat16* q_ptr = query + (b * num_k_heads + kh) * k_dim;
     const __nv_bfloat16* k_ptr = key + (b * num_k_heads + kh) * k_dim;
     const __nv_bfloat16* v_ptr = value + (b * num_v_heads + vh) * v_dim;

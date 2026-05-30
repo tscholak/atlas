@@ -78,6 +78,14 @@ impl Qwen3SsmLayer {
                 "gated_delta_rule",
                 "gated_delta_rule_decode_f32",
             ),
+            // Batched-pool decode variant. Optional via `try_kernel`
+            // because not every model's PTX module has the `_batched`
+            // entry yet — Phase IIa rollout is per-model.
+            gdn_batched_k: super::super::try_kernel(
+                gpu,
+                "gated_delta_rule",
+                "gated_delta_rule_decode_batched",
+            ),
             ba_gates_k: gpu.kernel("ssm_preprocess", "dense_gemv_ba_gates")?,
             residual_add_k: if config.use_fp32_residual() {
                 gpu.kernel("norm", "f32_residual_add")
