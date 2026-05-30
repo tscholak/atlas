@@ -97,13 +97,19 @@ impl TransformerModel {
         // 1d. Upload metadata with fixed stride (active + padding)
         let metadata = self.upload_batch_metadata_fixed(seqs, padded_n, &mut kv_cache, stream)?;
 
-        // CUDA graphs DISABLED for multi-sequence decode: SSM state pointers
-        // (h_state, conv_state) are baked into per-seq kernel args of
-        // gdn_decode/conv1d_update at capture time. When batch composition
-        // changes (sequences finish, swap_remove reorders), the graph
-        // replays with stale pointers and corrupts SSM state across seqs.
-        // Attention metadata uses fixed device addresses and is safe.
-        // n==1 still uses self.decode()'s correct graph cache.
+        // CUDA graphs DISABLED for multi-sequence decode. Original
+        // rationale was per-seq SSM state pointer staleness across
+        // batch-composition changes. Phase IIb-F (2026-05-30) tried
+        // re-enabling — output stayed correct (the staleness comment
+        // turned out to be overcautious now that `free_sequence`
+        // unconditionally drains `batch_decode_graphs` on retire) but
+        // benchmarks showed N=4 decode-heavy regressed 33.8 → 24.4 t/s
+        // (-28%). At this workload the per-tick d2h-sync drain bounds
+        // wall, and the graph capture overhead exceeds the replay
+        // savings on every batch-composition change. Leaving disabled
+        // until the underlying tick cadence improves; revisit once
+        // Phase IIb-A (batched SSM decode) lands and the GPU work
+        // amortises differently.
         let use_graphs = false;
 
         let ctx = ForwardContext {
