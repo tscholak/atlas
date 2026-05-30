@@ -97,19 +97,31 @@ impl TransformerModel {
         // 1d. Upload metadata with fixed stride (active + padding)
         let metadata = self.upload_batch_metadata_fixed(seqs, padded_n, &mut kv_cache, stream)?;
 
-        // CUDA graphs DISABLED for multi-sequence decode. Original
-        // rationale was per-seq SSM state pointer staleness across
-        // batch-composition changes. Phase IIb-F (2026-05-30) tried
-        // re-enabling — output stayed correct (the staleness comment
-        // turned out to be overcautious now that `free_sequence`
-        // unconditionally drains `batch_decode_graphs` on retire) but
-        // benchmarks showed N=4 decode-heavy regressed 33.8 → 24.4 t/s
-        // (-28%). At this workload the per-tick d2h-sync drain bounds
-        // wall, and the graph capture overhead exceeds the replay
-        // savings on every batch-composition change. Leaving disabled
-        // until the underlying tick cadence improves; revisit once
-        // Phase IIb-A (batched SSM decode) lands and the GPU work
-        // amortises differently.
+        // CUDA graphs DISABLED for multi-sequence decode.
+        //
+        // History (chronological):
+        // 1. Phase IIb-F standalone (commit b1dec75): enabled graphs on
+        //    the per-seq decode path. Output stayed correct but N=4
+        //    decode-heavy regressed 33.8 → 24.4 t/s (-28%) — graph
+        //    capture overhead exceeded replay savings at this shape.
+        // 2. Phase IIb-F redux (2026-05-30, after Phase IIb-A): tried
+        //    enabling graphs only when ATLAS_BATCHED_SSM_DECODE=1, on
+        //    the hypothesis that fewer per-tick launches would shift
+        //    the capture-vs-replay balance. Graph capture succeeded
+        //    for N=2 but replay hung: the batched path stages
+        //    per-batch slot-pointer arrays via copy_h2d_async from a
+        //    stack-allocated u64[16] in `stage_slot_ptrs_dispatch`,
+        //    and the graph's captured memcpy node references that
+        //    host buffer — which is gone by replay time, so the
+        //    pointer array on device is garbage and the kernel
+        //    dereferences it for h_state and friends.
+        //
+        // Unblocker for F: stage slot pointers from a stable host-pinned
+        // (or device-resident, precomputed) buffer keyed by `(kind,
+        // ssm_layer_idx, batch_position)` so the graph's memcpy node
+        // points at an address that's still alive at replay. That's a
+        // refactor of `stage_slot_ptrs_dispatch` + `slot_ptrs_buf`
+        // ownership; out of scope for now.
         let use_graphs = false;
 
         let ctx = ForwardContext {

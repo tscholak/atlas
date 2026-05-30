@@ -134,9 +134,13 @@ extern "C" __global__ void gated_delta_rule_decode(
 }
 
 // Batched-pool variant: h_state_ptrs[b] points to the b-th seq's slot in
-// SsmStatePool (each slot is a contiguous [num_v_heads, k_dim, v_dim]
-// block, so we offset by `vh * k_dim * v_dim` within the slot for this
-// block's head). All other args are identical to the single-buffer entry.
+// SsmStatePool. q/k/v/gate/beta/output strides let the kernel address
+// non-contiguous-per-batch layouts (e.g. q/k/v packed in a single
+// [N, conv_dim] buffer alongside V at offset key_dim*2 — caller passes
+// qk_stride = conv_dim, v_stride = conv_dim, out_stride = value_dim).
+// For the historical [N, num_k_heads * k_dim] contiguous layout, callers
+// pass qk_stride = num_k_heads * k_dim, v_stride = num_v_heads * v_dim,
+// gb_stride = num_v_heads, out_stride = num_v_heads * v_dim.
 extern "C" __global__ void gated_delta_rule_decode_batched(
     float* const* __restrict__ h_state_ptrs,
     const __nv_bfloat16* __restrict__ query,
@@ -149,7 +153,11 @@ extern "C" __global__ void gated_delta_rule_decode_batched(
     unsigned int num_k_heads,
     unsigned int num_v_heads,
     unsigned int k_dim,
-    unsigned int v_dim
+    unsigned int v_dim,
+    unsigned int qk_stride,
+    unsigned int v_stride,
+    unsigned int gb_stride,
+    unsigned int out_stride
 ) {
     const unsigned int vh = blockIdx.x;
     const unsigned int b = blockIdx.y;
@@ -159,14 +167,21 @@ extern "C" __global__ void gated_delta_rule_decode_batched(
     const unsigned int head_repeat = num_v_heads / num_k_heads;
     const unsigned int kh = vh / head_repeat;
 
-    // Per-slot h_state — the caller has staged batch_size pointers into
-    // h_state_ptrs ahead of the launch, each pointing at the matching
-    // seq's pool slot. Slot data is laid out [num_v_heads, k_dim, v_dim]
-    // so we offset by `vh * k_dim * v_dim` within the slot.
     float* H = h_state_ptrs[b] + vh * k_dim * v_dim;
+    // Resolve q/k/v/gate/beta/output bases via the explicit strides.
+    // The body still uses the (b, vh, kh) ordering for the indexing
+    // math, so we adjust the input pointers to bake in the per-batch
+    // base; the body then uses the canonical contiguous offsets within
+    // each batch row.
+    const __nv_bfloat16* q_b = query + b * qk_stride;
+    const __nv_bfloat16* k_b = key   + b * qk_stride;
+    const __nv_bfloat16* v_b = value + b * v_stride;
+    const float* gate_b = gate + b * gb_stride;
+    const float* beta_b = beta + b * gb_stride;
+    __nv_bfloat16* out_b = output + b * out_stride;
     gated_delta_rule_decode_body(
-        H, query, key, value, gate, beta, output,
-        b, vh, kh, tid, num_k_heads, num_v_heads, k_dim, v_dim
+        H, q_b, k_b, v_b, gate_b, beta_b, out_b,
+        0, vh, kh, tid, num_k_heads, num_v_heads, k_dim, v_dim
     );
 }
 

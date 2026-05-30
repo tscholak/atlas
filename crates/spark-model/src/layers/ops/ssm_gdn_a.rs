@@ -60,19 +60,28 @@ pub fn gdn_decode(
 /// from a GPU array of `batch_size` slot-base pointers staged by the caller
 /// into `h_state_ptrs` (a small device buffer holding `batch_size * 8`
 /// bytes of `float*`). The kernel offsets within each slot by `vh * k_dim
-/// * v_dim` for the current value head. All other args are identical to
-/// [`gdn_decode`] — `query`/`key`/`value`/`gate`/`beta`/`output` remain
-/// contiguous per batch.
+/// * v_dim` for the current value head.
+///
+/// Q/K/V/gate/beta/output are addressed via explicit strides between
+/// consecutive batch rows (`qk_stride`, `v_stride`, `gb_stride`,
+/// `out_stride` — in elements, not bytes). This lets the kernel run
+/// against the conv1d output layout (`[N, conv_dim]` with Q/K/V packed
+/// inside each row) without re-laying-out the buffer per-batch. For
+/// contiguous `[N, num_k_heads*k_dim]` layouts callers pass
+/// `qk_stride = num_k_heads * k_dim`, `v_stride = num_v_heads * v_dim`,
+/// `gb_stride = num_v_heads`, `out_stride = num_v_heads * v_dim`.
 ///
 /// Kernel: `gated_delta_rule_decode_batched(h_state_ptrs, query, key,
 ///          value, gate, beta, output, batch_size, num_k_heads,
-///          num_v_heads, k_dim, v_dim)`
+///          num_v_heads, k_dim, v_dim, qk_stride, v_stride, gb_stride,
+///          out_stride)`
 /// Grid: (num_v_heads, batch_size, 1)  Block: (128, 1, 1)
 ///
 /// Used by the batched verify path (Phase IIb) and batched prefill
 /// (Phase IIc) where active sequences live at non-contiguous slot indices
 /// in `SsmStatePool` (because the scheduler's `active` vec is in prefill-
 /// finish order, not slot-claim order).
+#[allow(clippy::too_many_arguments)]
 pub fn gdn_decode_batched(
     gpu: &dyn GpuBackend,
     kernel: KernelHandle,
@@ -88,6 +97,10 @@ pub fn gdn_decode_batched(
     num_v_heads: u32,
     k_dim: u32,
     v_dim: u32,
+    qk_stride: u32,
+    v_stride: u32,
+    gb_stride: u32,
+    out_stride: u32,
     stream: u64,
 ) -> Result<()> {
     KernelLaunch::new(gpu, kernel)
@@ -105,6 +118,10 @@ pub fn gdn_decode_batched(
         .arg_u32(num_v_heads)
         .arg_u32(k_dim)
         .arg_u32(v_dim)
+        .arg_u32(qk_stride)
+        .arg_u32(v_stride)
+        .arg_u32(gb_stride)
+        .arg_u32(out_stride)
         .launch(stream)
 }
 
