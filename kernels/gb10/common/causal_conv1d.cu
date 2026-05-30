@@ -344,6 +344,8 @@ static __device__ __forceinline__ void causal_conv1d_update_l2norm_body(
     unsigned int dim,
     unsigned int d_conv,
     unsigned int head_dim,
+    unsigned int input_stride,
+    unsigned int output_stride,
     float l2_eps
 );
 
@@ -377,9 +379,13 @@ extern "C" __global__ void causal_conv1d_update_l2norm(
     // for a `__restrict__` parameter — nvcc's aliasing optimisation can
     // hoist speculative loads past the `valid` check.
     float* state_for_b_base = conv_state + b * dim * d_conv;
+    // Single-buffer path: new_input is [batch, dim] contiguous and
+    // output is [batch, dim] contiguous, so per-batch strides match
+    // `dim` exactly.
     causal_conv1d_update_l2norm_body(
         state_for_b_base, new_input, weight, bias, output,
-        b, ch, tid, valid, block_needs_l2, dim, d_conv, head_dim, l2_eps
+        b, ch, tid, valid, block_needs_l2, dim, d_conv, head_dim,
+        dim, dim, l2_eps
     );
 }
 
@@ -394,6 +400,8 @@ extern "C" __global__ void causal_conv1d_update_l2norm_batched(
     unsigned int d_conv,
     unsigned int qk_channels,
     unsigned int head_dim,
+    unsigned int input_stride,  // BF16 elements between consecutive batch rows in new_input
+    unsigned int output_stride, // BF16 elements between consecutive batch rows in output
     float l2_eps
 ) {
     const unsigned int ch = blockIdx.x * blockDim.x + threadIdx.x;
@@ -409,7 +417,8 @@ extern "C" __global__ void causal_conv1d_update_l2norm_batched(
     float* state_for_b_base = conv_state_ptrs[b];
     causal_conv1d_update_l2norm_body(
         state_for_b_base, new_input, weight, bias, output,
-        b, ch, tid, valid, block_needs_l2, dim, d_conv, head_dim, l2_eps
+        b, ch, tid, valid, block_needs_l2, dim, d_conv, head_dim,
+        input_stride, output_stride, l2_eps
     );
 }
 
@@ -427,6 +436,8 @@ static __device__ __forceinline__ void causal_conv1d_update_l2norm_body(
     unsigned int dim,
     unsigned int d_conv,
     unsigned int head_dim,
+    unsigned int input_stride,
+    unsigned int output_stride,
     float l2_eps
 ) {
     float silu = 0.0f;
@@ -437,7 +448,7 @@ static __device__ __forceinline__ void causal_conv1d_update_l2norm_body(
 
         for (unsigned int i = 0; i < d_conv - 1; i++)
             state[i] = state[i + 1];
-        state[d_conv - 1] = (float)new_input[b * dim + ch];
+        state[d_conv - 1] = (float)new_input[b * input_stride + ch];
 
         const __nv_bfloat16* w = weight + ch * d_conv;
         float acc = (bias != nullptr) ? bias[ch] : 0.0f;
@@ -485,7 +496,7 @@ static __device__ __forceinline__ void causal_conv1d_update_l2norm_body(
     }
 
     if (valid) {
-        output[b * dim + ch] = __float2bfloat16(silu);
+        output[b * output_stride + ch] = __float2bfloat16(silu);
     }
 }
 

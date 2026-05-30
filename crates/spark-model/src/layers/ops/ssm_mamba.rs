@@ -109,6 +109,8 @@ pub fn conv1d_update_l2norm_batched(
     batch_size: u32,
     qk_channels: u32,
     head_dim: u32,
+    input_stride: u32,
+    output_stride: u32,
     l2_eps: f32,
     stream: u64,
 ) -> Result<()> {
@@ -126,6 +128,8 @@ pub fn conv1d_update_l2norm_batched(
         .arg_u32(d_conv)
         .arg_u32(qk_channels)
         .arg_u32(head_dim)
+        .arg_u32(input_stride)
+        .arg_u32(output_stride)
         .arg_f32(l2_eps)
         .launch(stream)
 }
