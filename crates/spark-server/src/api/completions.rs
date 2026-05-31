@@ -240,8 +240,8 @@ pub async fn completions(
         completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
             reasoning_tokens: response.reasoning_tokens as usize,
             audio_tokens: 0,
-            accepted_prediction_tokens: 0,
-            rejected_prediction_tokens: 0,
+            accepted_prediction_tokens: response.accepted_prediction_tokens as usize,
+            rejected_prediction_tokens: response.rejected_prediction_tokens as usize,
         }),
         time_to_first_token_ms: response.time_to_first_token_ms,
         response_tokens_per_second: tokens_per_second,
@@ -351,6 +351,8 @@ pub(super) async fn completions_stream(
             decode_time_ms,
             reasoning_tokens,
             cached_prompt_tokens,
+            accepted_prediction_tokens,
+            rejected_prediction_tokens,
         } => {
             let tps = if decode_time_ms > 0.0 {
                 completion_tokens.saturating_sub(1) as f64 / (decode_time_ms / 1000.0)
@@ -368,8 +370,8 @@ pub(super) async fn completions_stream(
                 completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
                     reasoning_tokens: reasoning_tokens as usize,
                     audio_tokens: 0,
-                    accepted_prediction_tokens: 0,
-                    rejected_prediction_tokens: 0,
+                    accepted_prediction_tokens: accepted_prediction_tokens as usize,
+                    rejected_prediction_tokens: rejected_prediction_tokens as usize,
                 }),
                 time_to_first_token_ms,
                 response_tokens_per_second: tps,

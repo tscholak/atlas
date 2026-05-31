@@ -28,6 +28,8 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                 decode_time_ms: decode_ms,
                 reasoning_tokens: a.thinking_tokens,
                 cached_prompt_tokens: a.cached_prompt_tokens,
+                accepted_prediction_tokens: a.accepted_prediction_tokens,
+                rejected_prediction_tokens: a.rejected_prediction_tokens,
             }) {
                 tracing::warn!(
                     "finish_sequence: streaming Done send failed (receiver dropped): {e}"
@@ -47,6 +49,8 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
                         logprobs: std::mem::take(&mut a.logprobs_data),
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
+                        accepted_prediction_tokens: a.accepted_prediction_tokens,
+                        rejected_prediction_tokens: a.rejected_prediction_tokens,
                     }))
                     .is_err()
                 {
@@ -167,6 +171,8 @@ pub fn swap_out_sequence(
 
     Ok(SwappedSeq {
         request_id: a.request_id,
+        accepted_prediction_tokens: a.accepted_prediction_tokens,
+        rejected_prediction_tokens: a.rejected_prediction_tokens,
         tokens,
         session_hash: a.session_hash,
         seq_len,
@@ -250,6 +256,8 @@ pub fn resume_swapped_seq(
 
     Ok(ActiveSeq {
         request_id: s.request_id,
+        accepted_prediction_tokens: s.accepted_prediction_tokens,
+        rejected_prediction_tokens: s.rejected_prediction_tokens,
         seq,
         session_hash: s.session_hash,
         last_token: s.last_token,

@@ -85,6 +85,16 @@ pub(super) struct ActiveSeq {
     /// to the originating request — and downstream operators can
     /// `journalctl REQUEST_ID=<uuid>` to see the full trace.
     pub request_id: String,
+    /// Phase C: cumulative count of MTP/speculative draft tokens
+    /// verified-and-accepted on this seq (across all K=2/K=3/K=4
+    /// verify steps it has gone through). Reported as
+    /// `usage.completion_tokens_details.accepted_prediction_tokens`
+    /// at end-of-request.
+    pub accepted_prediction_tokens: u32,
+    /// Phase C: cumulative count of MTP draft tokens
+    /// verified-and-rejected on this seq. Reported as
+    /// `usage.completion_tokens_details.rejected_prediction_tokens`.
+    pub rejected_prediction_tokens: u32,
     pub seq: SequenceState,
     pub session_hash: u64,
     pub last_token: u32,
@@ -196,6 +206,11 @@ pub(super) struct SwappedSeq {
     /// round-trip so resumed sequences retain their original request_id
     /// and per-tick log attribution stays continuous.
     pub request_id: String,
+    /// Phase C: MTP accept/reject counts preserved across swap so the
+    /// resumed seq's usage report reflects total spec activity, not
+    /// just the post-resume portion.
+    pub accepted_prediction_tokens: u32,
+    pub rejected_prediction_tokens: u32,
     pub tokens: Vec<u32>,
     pub session_hash: u64,
     pub seq_len: usize,

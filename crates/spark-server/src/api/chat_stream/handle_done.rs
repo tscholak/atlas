@@ -28,6 +28,8 @@ pub(super) fn handle_done(
     decode_time_ms: f64,
     reasoning_tokens: u32,
     cached_prompt_tokens: u32,
+    accepted_prediction_tokens: u32,
+    rejected_prediction_tokens: u32,
 ) -> SseVec {
     let mut sse_events: SseVec = Vec::new();
 
@@ -107,8 +109,8 @@ pub(super) fn handle_done(
         completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
             reasoning_tokens: reasoning_tokens as usize,
             audio_tokens: 0,
-            accepted_prediction_tokens: 0,
-            rejected_prediction_tokens: 0,
+            accepted_prediction_tokens: accepted_prediction_tokens as usize,
+            rejected_prediction_tokens: rejected_prediction_tokens as usize,
         }),
         time_to_first_token_ms,
         response_tokens_per_second: tps,

@@ -88,6 +88,9 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     );
 
     if num_accepted == 3 {
+        // Phase C: K=4 full-accept = all 3 drafts (drafts[0..3])
+        // accepted; v3 is the post-draft verified token.
+        a.accepted_prediction_tokens = a.accepted_prediction_tokens.saturating_add(3);
         emit_token(a, drafts[0], verify_lps.first().cloned());
         if !a.finished {
             emit_token(a, drafts[1], verify_lps.get(1).cloned());
@@ -139,6 +142,10 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             );
         }
     } else if num_accepted == 2 {
+        // Phase C: K=4 partial-accept-2 = drafts[0..2] accepted,
+        // drafts[2] rejected.
+        a.accepted_prediction_tokens = a.accepted_prediction_tokens.saturating_add(2);
+        a.rejected_prediction_tokens = a.rejected_prediction_tokens.saturating_add(1);
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 2, 0) {
@@ -196,6 +203,10 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             );
         }
     } else if num_accepted == 1 {
+        // Phase C: K=4 partial-accept-1 = drafts[0] accepted,
+        // drafts[1..3] (2 drafts) rejected.
+        a.accepted_prediction_tokens = a.accepted_prediction_tokens.saturating_add(1);
+        a.rejected_prediction_tokens = a.rejected_prediction_tokens.saturating_add(2);
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
         a.seq.tokens.pop();
@@ -248,6 +259,9 @@ pub fn step_verify_k4(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             );
         }
     } else {
+        // Phase C: K=4 full-reject = all 3 drafts (drafts[0..3])
+        // rejected; v0 is the resampled non-spec token.
+        a.rejected_prediction_tokens = a.rejected_prediction_tokens.saturating_add(3);
         a.seq.seq_len -= 3;
         a.seq.tokens.pop();
         a.seq.tokens.pop();

@@ -89,6 +89,16 @@ pub fn step_verify_dflash(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], 
         }
     }
 
+    // Phase C: DFlash K=γ accepts `num_accepted` of `drafts.len()`
+    // drafted tokens; the remaining `drafts.len() - num_accepted` are
+    // rejected (their slots get the verifier's "bonus" + later
+    // re-proposals).
+    a.accepted_prediction_tokens =
+        a.accepted_prediction_tokens.saturating_add(num_accepted as u32);
+    a.rejected_prediction_tokens = a
+        .rejected_prediction_tokens
+        .saturating_add((drafts.len().saturating_sub(num_accepted)) as u32);
+
     // Emit accepted drafts.
     for i in 0..num_accepted {
         emit_token(a, drafts[i], None);

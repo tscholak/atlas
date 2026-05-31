@@ -77,6 +77,11 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
 
     if accepted {
         // ── ACCEPTED ──
+        // Phase C: K=2 accept = 1 drafted token verified-and-accepted
+        // (drafts[0]; v1 is the post-draft verified token, NOT a draft).
+        // OpenAI's accepted_prediction_tokens counts speculative
+        // predictions that survived verification.
+        a.accepted_prediction_tokens = a.accepted_prediction_tokens.saturating_add(1);
         emit_token(a, drafts[0], verify_lps.first().cloned());
         if !a.finished {
             emit_token(a, v1, verify_lps.get(1).cloned());
@@ -124,6 +129,10 @@ pub fn step_verify_k2(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
         }
     } else {
         // ── REJECTED ──
+        // Phase C: K=2 reject = the 1 drafted token (drafts[0]) was
+        // rejected; v0 is the resampled non-spec token taking its
+        // place.
+        a.rejected_prediction_tokens = a.rejected_prediction_tokens.saturating_add(1);
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
 

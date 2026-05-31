@@ -171,6 +171,8 @@ pub fn prefill_request(
     if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
         let mut a = ActiveSeq {
             request_id: req_request_id.clone(),
+            accepted_prediction_tokens: 0,
+            rejected_prediction_tokens: 0,
             seq,
             session_hash: req_session_hash,
             last_token: first,
@@ -240,6 +242,8 @@ pub fn prefill_request(
 
     Ok(Some(ActiveSeq {
         request_id: req_request_id,
+        accepted_prediction_tokens: 0,
+        rejected_prediction_tokens: 0,
         seq,
         session_hash: req_session_hash,
         last_token: first,

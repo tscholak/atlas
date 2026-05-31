@@ -211,6 +211,8 @@ pub(crate) async fn chat_completions_stream(
                 decode_time_ms,
                 reasoning_tokens,
                 cached_prompt_tokens,
+                accepted_prediction_tokens,
+                rejected_prediction_tokens,
             } => handle_done::handle_done(
                 &mut stream_state,
                 &ctx,
@@ -220,6 +222,8 @@ pub(crate) async fn chat_completions_stream(
                 decode_time_ms,
                 reasoning_tokens,
                 cached_prompt_tokens,
+                accepted_prediction_tokens,
+                rejected_prediction_tokens,
             ),
             StreamEvent::Error(msg) => handle_error::handle_error(&ctx, msg),
         };

@@ -105,6 +105,12 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
     let mut last_decode_time_ms = 0.0f64;
     let mut total_reasoning_tokens = 0u32;
     let mut total_cached_prompt_tokens = 0u32;
+    // Phase C: accumulate MTP/spec accept+reject across all `n`
+    // choices in the same request (n>1 with speculative decode emits
+    // multiple sequences; each carries its own counters from the
+    // scheduler).
+    let mut total_accepted_prediction_tokens = 0u32;
+    let mut total_rejected_prediction_tokens = 0u32;
 
     for choice_idx in 0..n {
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -182,6 +188,8 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         // cached_prompt_tokens is a per-request prefix-cache hit count; for
         // n>1 we only charge once (same prompt reused).
         total_cached_prompt_tokens = total_cached_prompt_tokens.max(response.cached_prompt_tokens);
+        total_accepted_prediction_tokens += response.accepted_prediction_tokens;
+        total_rejected_prediction_tokens += response.rejected_prediction_tokens;
 
         let (reasoning_content_i, output_text_i) =
             decode_response_text(&state, &response, enable_thinking);
@@ -220,6 +228,8 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         last_decode_time_ms,
         total_reasoning_tokens,
         total_cached_prompt_tokens,
+        total_accepted_prediction_tokens,
+        total_rejected_prediction_tokens,
         prompt_len,
     )
 }
@@ -422,6 +432,8 @@ fn finalize_response(
     last_decode_time_ms: f64,
     total_reasoning_tokens: u32,
     total_cached_prompt_tokens: u32,
+    total_accepted_prediction_tokens: u32,
+    total_rejected_prediction_tokens: u32,
     prompt_len: usize,
 ) -> Response {
     let tokens_per_second = if last_decode_time_ms > 0.0 && total_completion_tokens > 0 {
@@ -440,8 +452,8 @@ fn finalize_response(
         completion_tokens_details: Some(crate::openai::CompletionTokensDetails {
             reasoning_tokens: total_reasoning_tokens as usize,
             audio_tokens: 0,
-            accepted_prediction_tokens: 0,
-            rejected_prediction_tokens: 0,
+            accepted_prediction_tokens: total_accepted_prediction_tokens as usize,
+            rejected_prediction_tokens: total_rejected_prediction_tokens as usize,
         }),
         time_to_first_token_ms: first_ttft,
         response_tokens_per_second: tokens_per_second,

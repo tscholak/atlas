@@ -81,6 +81,9 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
     );
 
     if num_accepted == 2 {
+        // Phase C: K=3 full-accept = both drafts (drafts[0], drafts[1])
+        // accepted; v2 is the post-draft verified token, not a draft.
+        a.accepted_prediction_tokens = a.accepted_prediction_tokens.saturating_add(2);
         emit_token(a, drafts[0], verify_lps.first().cloned());
         if !a.finished {
             emit_token(a, drafts[1], verify_lps.get(1).cloned());
@@ -129,6 +132,10 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             );
         }
     } else if num_accepted == 1 {
+        // Phase C: K=3 partial-accept = drafts[0] accepted, drafts[1]
+        // rejected (and replaced by v1).
+        a.accepted_prediction_tokens = a.accepted_prediction_tokens.saturating_add(1);
+        a.rejected_prediction_tokens = a.rejected_prediction_tokens.saturating_add(1);
         a.seq.seq_len -= 1;
         a.seq.tokens.pop();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
@@ -181,6 +188,9 @@ pub fn step_verify_k3(model: &dyn Model, a: &mut ActiveSeq, drafts: &[u32], num_
             );
         }
     } else {
+        // Phase C: K=3 full-reject = both drafts (drafts[0], drafts[1])
+        // rejected.
+        a.rejected_prediction_tokens = a.rejected_prediction_tokens.saturating_add(2);
         a.seq.seq_len -= 2;
         a.seq.tokens.pop();
         a.seq.tokens.pop();

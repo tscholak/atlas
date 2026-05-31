@@ -222,6 +222,16 @@ pub struct InferenceResponse {
     /// Number of prompt tokens served by the prefix cache (no prefill compute
     /// cost). Reported as `usage.prompt_tokens_details.cached_tokens`.
     pub cached_prompt_tokens: u32,
+    /// Number of MTP/speculative draft tokens that were verified and
+    /// accepted into the output. Reported as
+    /// `usage.completion_tokens_details.accepted_prediction_tokens`.
+    /// Phase C: previously hardcoded 0 at the Usage construction sites.
+    pub accepted_prediction_tokens: u32,
+    /// Number of MTP/speculative draft tokens that were verified and
+    /// rejected (forcing fall-back to the non-spec sampled token).
+    /// Reported as
+    /// `usage.completion_tokens_details.rejected_prediction_tokens`.
+    pub rejected_prediction_tokens: u32,
 }
 
 /// Events sent during streaming generation.
@@ -239,6 +249,10 @@ pub enum StreamEvent {
         reasoning_tokens: u32,
         /// Prefix-cached prompt tokens (for usage details).
         cached_prompt_tokens: u32,
+        /// MTP draft tokens verified and accepted (Phase C).
+        accepted_prediction_tokens: u32,
+        /// MTP draft tokens verified and rejected (Phase C).
+        rejected_prediction_tokens: u32,
     },
     Error(String),
 }
