@@ -23,6 +23,12 @@ use crate::{
 };
 
 pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
+    // Install tracing FIRST so the rest of startup logs through the
+    // configured (JSON-formatted, journald-bound) subscriber. Honors
+    // --dump for the atlas::dump target filter level and optional
+    // file mirror.
+    serve_phases::init_tracing(&args)?;
+
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
 
@@ -430,7 +436,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let rate_limiter = rate_limiter::RateLimiter::from_env();
     let conversation_store = conversation_store::ConversationStore::from_env();
     serve_phases::log_response_store_audit(&response_store, &rate_limiter);
-    let dump_writer = serve_phases::open_dump_writer(&args);
     let auth = build_auth_config(&args)?;
     let state = Arc::new(AppState {
         tokenizer,
@@ -466,7 +471,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         response_store,
         rate_limiter,
         conversation_store,
-        dump_writer,
         auth,
     });
 

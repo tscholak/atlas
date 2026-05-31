@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use crate::api::InferenceRequest;
 use crate::tokenizer::ChatTokenizer;
 use crate::{
-    auth, conversation_store, rate_limiter, reasoning_parser, request_dumper, response_store,
+    auth, conversation_store, rate_limiter, reasoning_parser, response_store,
     tool_parser,
 };
 
@@ -81,9 +81,6 @@ pub struct AppState {
     pub rate_limiter: Arc<rate_limiter::RateLimiter>,
     /// Conversations API store (items indexed by conv_id).
     pub conversation_store: Arc<conversation_store::ConversationStore>,
-    /// Request/response dumper for `--dump`. None = disabled (zero
-    /// overhead; handler call sites short-circuit on Option::None).
-    pub dump_writer: Option<request_dumper::DumpHandle>,
     /// Bearer-token auth configuration. `Some` ⇒ `--require-auth` was set
     /// and the middleware enforces `Authorization: Bearer <token>` against
     /// the loaded set. `None` ⇒ auth is disabled (every request passes).

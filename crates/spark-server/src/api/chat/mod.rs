@@ -59,17 +59,21 @@ pub async fn chat_completions(
         }
     };
 
-    // --dump: record the incoming request body verbatim.
-    let dump_seq = state.dump_writer.as_ref().and_then(|d| {
+    // --dump: emit an `atlas::dump` tracing event for the incoming
+    // request body. Outer event_enabled gate skips the verbatim-body
+    // re-parse when dumping is disabled by the active filter.
+    let dump_seq = if tracing::event_enabled!(target: "atlas::dump", tracing::Level::INFO) {
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(v) => {
-                let seq = d.next_seq();
-                d.dump_request("/v1/chat/completions", seq, &v);
+                let seq = crate::request_dumper::next_seq();
+                crate::request_dumper::dump_request("/v1/chat/completions", seq, &v);
                 Some(seq)
             }
             Err(_) => None,
         }
-    });
+    } else {
+        None
+    };
 
     chat_completions_inner(state, req_ctx, req, dump_seq).await
 }

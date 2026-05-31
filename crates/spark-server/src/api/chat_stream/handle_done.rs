@@ -199,8 +199,12 @@ pub(super) fn handle_done(
         }
     }
 
-    // --dump synthesized response entry.
-    if let (Some(seq), Some(dump)) = (ctx.dump_seq, ctx.state.dump_writer.as_ref()) {
+    // --dump synthesized response entry — emit only when the
+    // atlas::dump target is enabled (avoids the json! body assembly
+    // when no subscriber wants it).
+    if let Some(seq) = ctx.dump_seq
+        && tracing::event_enabled!(target: "atlas::dump", tracing::Level::INFO)
+    {
         let has_tool_calls = state.detector.as_ref().is_some_and(|d| d.has_tool_calls());
         let body = serde_json::json!({
             "id": ctx.id,
@@ -215,7 +219,12 @@ pub(super) fn handle_done(
             "_note": "Synthesized from post-sanitizer accumulators; \
                       per-chunk capture is a follow-up.",
         });
-        dump.dump_response("/v1/chat/completions", seq, &body, true);
+        crate::request_dumper::dump_response(
+            "/v1/chat/completions",
+            seq,
+            &body,
+            true,
+        );
     }
 
     sse_events

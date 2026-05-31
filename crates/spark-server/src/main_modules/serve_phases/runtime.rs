@@ -93,27 +93,89 @@ pub(crate) fn load_sampling_defaults(model_dir: &Path, args: &cli::ServeArgs) ->
     }
 }
 
-pub(crate) fn open_dump_writer(args: &cli::ServeArgs) -> Option<crate::request_dumper::DumpHandle> {
-    use crate::request_dumper;
-    match args.dump.as_deref() {
-        Some(arg) => {
-            let path = request_dumper::resolve_path(arg);
-            match request_dumper::DumpHandle::open(path) {
-                Ok(h) => {
-                    tracing::info!(
-                        path = %h.path().display(),
-                        "Request dump enabled (JSONL append)"
-                    );
-                    Some(h)
-                }
-                Err(e) => {
-                    tracing::error!("Failed to open --dump target: {e}. Dumping is disabled.");
-                    None
-                }
-            }
+/// Install the global `tracing` subscriber for the `serve` lifetime.
+///
+/// One stderr layer is always installed (JSON formatter; journald
+/// captures the line). When `--dump <PATH>` is set with a real file
+/// path, an additional JSON layer is installed that mirrors only the
+/// `atlas::dump` target's events to that file — for offline replay /
+/// fixture capture. The sentinels `-` and `/dev/stderr` mean
+/// "journald only, no file mirror" and skip file-layer install.
+///
+/// Filter setup:
+///   - Default level from `RUST_LOG` env (fallback `info`).
+///   - `atlas::dump=info` is forced on when `--dump` is set, `=off`
+///     otherwise. The `request_dumper` helpers short-circuit body
+///     serialisation via `event_enabled!` so disabled dumps cost ~zero.
+pub(crate) fn init_tracing(args: &cli::ServeArgs) -> Result<()> {
+    use tracing_subscriber::{
+        EnvFilter, Layer, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    };
+
+    let dump_dir = args.dump.as_deref();
+    let dump_enabled = dump_dir.is_some();
+
+    let base_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let dump_directive = if dump_enabled {
+        "atlas::dump=info"
+    } else {
+        "atlas::dump=off"
+    };
+    let combined = format!("{base_filter},{dump_directive}");
+    let env_filter = EnvFilter::try_new(&combined).map_err(|e| {
+        anyhow::anyhow!("invalid RUST_LOG filter {combined:?}: {e}")
+    })?;
+
+    let stderr_layer = fmt::layer().json().with_writer(std::io::stderr);
+
+    // Only install a file mirror when the path is a real file (not a
+    // journald-only sentinel). Errors here are surfaced to the caller
+    // — a misconfigured path should be a startup failure, not a silent
+    // disable like the pre-Phase-A behavior.
+    let file_layer = match dump_dir {
+        Some(arg) if !crate::request_dumper::is_journald_only_sentinel(arg) => {
+            let path = crate::request_dumper::resolve_path(arg);
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "failed to open --dump file {}: {e}",
+                        path.display()
+                    )
+                })?;
+            tracing::info!(path = %path.display(), "atlas::dump file mirror enabled");
+            Some(
+                fmt::layer()
+                    .json()
+                    .with_writer(std::sync::Mutex::new(file))
+                    .with_filter(EnvFilter::new("atlas::dump=info")),
+            )
         }
-        None => None,
+        _ => None,
+    };
+
+    let registry = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stderr_layer);
+
+    match file_layer {
+        Some(file_layer) => {
+            registry.with(file_layer).init();
+        }
+        None => {
+            registry.init();
+        }
     }
+
+    if dump_enabled {
+        tracing::info!(
+            sentinel = ?dump_dir,
+            "atlas::dump events enabled (journald + optional file mirror)"
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn log_response_store_audit(

@@ -28,8 +28,8 @@ pub(super) use preflight::{
     ReservePreflight, init_gpu_backend, post_load_memory_audit, preflight_reserve,
 };
 pub(super) use runtime::{
-    SamplingDefaults, load_eos_tokens, load_sampling_defaults, log_behavior_audit,
-    log_response_store_audit, open_dump_writer, resolve_model_name, resolve_tool_call_parser,
+    SamplingDefaults, init_tracing, load_eos_tokens, load_sampling_defaults, log_behavior_audit,
+    log_response_store_audit, resolve_model_name, resolve_tool_call_parser,
 };
 pub(super) use tokenizer_runtime::{TokenizerRuntime, resolve_tokenizer_runtime};
 pub(super) use topology::{Topology, init_nccl_comm, resolve_topology};

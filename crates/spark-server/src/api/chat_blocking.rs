@@ -487,10 +487,16 @@ fn finalize_response(
         }
     }
 
-    // --dump: record the non-streaming response body, correlated with
-    // the request via the shared seq number.
-    if let (Some(seq), Some(dump)) = (dump_seq, state.dump_writer.as_ref()) {
-        dump.dump_response("/v1/chat/completions", seq, &completion, false);
+    // --dump: emit the non-streaming response body, correlated with
+    // the request via the shared seq number. The helper short-
+    // circuits when the atlas::dump target is filtered out.
+    if let Some(seq) = dump_seq {
+        crate::request_dumper::dump_response(
+            "/v1/chat/completions",
+            seq,
+            &completion,
+            false,
+        );
     }
 
     Json(completion).into_response()

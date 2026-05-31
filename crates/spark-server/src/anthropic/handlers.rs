@@ -57,16 +57,18 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
     //    the entry shows endpoint="/v1/messages"; chat_completions_inner
     //    is invoked with dump_seq=None so it doesn't double-dump as
     //    "/v1/chat/completions".
-    let dump_seq = state.dump_writer.as_ref().and_then(|d| {
+    let dump_seq = if tracing::event_enabled!(target: "atlas::dump", tracing::Level::INFO) {
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(v) => {
-                let seq = d.next_seq();
-                d.dump_request("/v1/messages", seq, &v);
+                let seq = crate::request_dumper::next_seq();
+                crate::request_dumper::dump_request("/v1/messages", seq, &v);
                 Some(seq)
             }
             Err(_) => None,
         }
-    });
+    } else {
+        None
+    };
 
     // 3. Translate to a ChatCompletionRequest.
     let chat_json = anthropic_to_chat_request_json(&req);
@@ -158,8 +160,13 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
         };
         let messages_resp = chat_to_anthropic_response(&chat_value, model_echo);
 
-        if let (Some(seq), Some(dump)) = (dump_seq, state.dump_writer.as_ref()) {
-            dump.dump_response("/v1/messages", seq, &messages_resp, false);
+        if let Some(seq) = dump_seq {
+            crate::request_dumper::dump_response(
+                "/v1/messages",
+                seq,
+                &messages_resp,
+                false,
+            );
         }
 
         // Preserve status code/headers from chat_completions_inner and
