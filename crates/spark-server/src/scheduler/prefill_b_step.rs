@@ -55,6 +55,7 @@ pub fn prefill_request(
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
     let req_timeout_at = req.timeout_at();
+    let req_request_id = req.request_id().to_string();
     let grammar_spec = req.take_grammar_spec();
     let grammar_state = compile_grammar_state(grammar_engine, &grammar_spec);
     let (prompt_tokens, max_tokens, mut sink, image_pixels, temperature) = match req {
@@ -169,6 +170,7 @@ pub fn prefill_request(
 
     if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
         let mut a = ActiveSeq {
+            request_id: req_request_id.clone(),
             seq,
             session_hash: req_session_hash,
             last_token: first,
@@ -237,6 +239,7 @@ pub fn prefill_request(
     }
 
     Ok(Some(ActiveSeq {
+        request_id: req_request_id,
         seq,
         session_hash: req_session_hash,
         last_token: first,

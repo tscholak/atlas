@@ -42,8 +42,10 @@ use super::compact::openai_error_response;
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
+    request_id: axum::extract::Extension<crate::request_id::RequestId>,
     body: axum::body::Bytes,
 ) -> Response {
+    let request_id = request_id.0;
     // Parse the body ourselves (instead of using axum's `Json`
     // extractor) so the same bytes can feed both the deserialized
     // handler path and the `--dump` raw-capture path without
@@ -66,7 +68,12 @@ pub async fn chat_completions(
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(v) => {
                 let seq = crate::request_dumper::next_seq();
-                crate::request_dumper::dump_request("/v1/chat/completions", seq, &v);
+                crate::request_dumper::dump_request(
+                    "/v1/chat/completions",
+                    seq,
+                    request_id.as_str(),
+                    &v,
+                );
                 Some(seq)
             }
             Err(_) => None,
@@ -75,19 +82,23 @@ pub async fn chat_completions(
         None
     };
 
-    chat_completions_inner(state, req_ctx, req, dump_seq).await
+    chat_completions_inner(state, req_ctx, req, dump_seq, request_id).await
 }
 
 /// Internal entry for the parsed-request path. Called by
 /// [`chat_completions`] after body capture, and by the Responses
 /// API adapter (which builds a `ChatCompletionRequest` in-memory
 /// and skips HTTP body bytes). `dump_seq` is `Some` only on the
-/// public handler path.
+/// public handler path. `request_id` is the per-request identifier
+/// (UUIDv7 or echoed `x-request-id`) extracted by the observability
+/// middleware; it gets threaded onto every `InferenceRequest` so the
+/// scheduler can attribute per-tick metrics back to this request.
 pub(crate) async fn chat_completions_inner(
     state: Arc<AppState>,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     mut req: ChatCompletionRequest,
     dump_seq: Option<u64>,
+    request_id: crate::request_id::RequestId,
 ) -> Response {
     crate::metrics::REQUESTS_TOTAL.inc();
     crate::metrics::REQUESTS_ACTIVE.inc();
@@ -254,6 +265,7 @@ pub(crate) async fn chat_completions_inner(
             &req,
             req_ctx,
             dump_seq,
+            request_id.clone(),
             prompt_tokens,
             session_hash,
             image_pixels,
@@ -290,6 +302,7 @@ pub(crate) async fn chat_completions_inner(
         req,
         req_ctx,
         dump_seq,
+        request_id,
         prompt_tokens,
         session_hash,
         image_pixels,

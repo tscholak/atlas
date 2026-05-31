@@ -65,7 +65,14 @@ pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
         0.0
     };
     let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
-    tracing::info!("Done: {n} tokens ({reason}) {tps:.1} tok/s, TTFT={ttft_ms:.1}ms");
+    tracing::info!(
+        request_id = %a.request_id,
+        completion_tokens = n,
+        finish_reason = reason,
+        tps,
+        ttft_ms,
+        "Done",
+    );
     // Cache the full sequence (prompt + generated) in the prefix cache.
     // Must happen BEFORE free_sequence() so block indices are still valid.
     // Enables multi-turn sessions to reuse KV cache for prior assistant responses.
@@ -159,6 +166,7 @@ pub fn swap_out_sequence(
     let _ = model.ep_broadcast_cmd(0xFFFFFFF1);
 
     Ok(SwappedSeq {
+        request_id: a.request_id,
         tokens,
         session_hash: a.session_hash,
         seq_len,
@@ -241,6 +249,7 @@ pub fn resume_swapped_seq(
     seq.seq_len = s.seq_len;
 
     Ok(ActiveSeq {
+        request_id: s.request_id,
         seq,
         session_hash: s.session_hash,
         last_token: s.last_token,

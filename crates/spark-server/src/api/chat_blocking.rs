@@ -27,6 +27,10 @@ pub(super) struct BlockingPathArgs {
     pub req: ChatCompletionRequest,
     pub req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     pub dump_seq: Option<u64>,
+    /// Per-request identifier (Phase D) — threaded onto every
+    /// `InferenceRequest::Blocking` we push to the scheduler so the
+    /// resulting `ActiveSeq` carries it for per-tick log attribution.
+    pub request_id: crate::request_id::RequestId,
     pub prompt_tokens: Vec<u32>,
     pub session_hash: u64,
     pub image_pixels: Vec<(Vec<f32>, usize, usize)>,
@@ -63,6 +67,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         req,
         req_ctx,
         dump_seq,
+        request_id,
         prompt_tokens,
         session_hash,
         image_pixels,
@@ -104,6 +109,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
     for choice_idx in 0..n {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let request = InferenceRequest::Blocking {
+            request_id: request_id.as_str().to_string(),
             prompt_tokens: prompt_tokens.clone(),
             session_hash,
             image_pixels: if choice_idx == 0 {
@@ -207,6 +213,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         req,
         req_ctx,
         dump_seq,
+        request_id,
         all_choices,
         total_completion_tokens,
         first_ttft,
@@ -408,6 +415,7 @@ fn finalize_response(
     req: ChatCompletionRequest,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     dump_seq: Option<u64>,
+    request_id: crate::request_id::RequestId,
     all_choices: Vec<crate::openai::ChatChoice>,
     total_completion_tokens: usize,
     first_ttft: f64,
@@ -494,6 +502,7 @@ fn finalize_response(
         crate::request_dumper::dump_response(
             "/v1/chat/completions",
             seq,
+            request_id.as_str(),
             &completion,
             false,
         );

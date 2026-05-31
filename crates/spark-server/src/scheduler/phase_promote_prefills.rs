@@ -96,6 +96,7 @@ fn build_active_seq_from_prefill(
 ) -> ActiveSeq {
     let temperature = p.temperature;
     ActiveSeq {
+        request_id: p.request_id,
         seq: p.seq,
         session_hash: p.session_hash,
         last_token: first,

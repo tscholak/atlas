@@ -40,12 +40,19 @@ pub fn next_seq() -> u64 {
 /// Emit a `kind="request"` dump event. `body` is any serde-serialisable
 /// value — typically the `ChatCompletionRequest` / `ResponsesRequest` /
 /// Anthropic `MessagesRequest` struct already deserialised by the
-/// handler.
+/// handler. `request_id` is the per-request identifier (from the
+/// observability middleware) so the dump pair joins cleanly with
+/// `atlas::tick` / `Done` events for the same request.
 ///
 /// No-op (no serialisation, no event) when the `atlas::dump` target is
 /// disabled by the active tracing filter.
-pub fn dump_request<T: serde::Serialize>(endpoint: &str, seq: u64, body: &T) {
-    write_event("request", endpoint, seq, body, None);
+pub fn dump_request<T: serde::Serialize>(
+    endpoint: &str,
+    seq: u64,
+    request_id: &str,
+    body: &T,
+) {
+    write_event("request", endpoint, seq, request_id, body, None);
 }
 
 /// Emit a `kind="response"` dump event. `is_stream` is true when `body`
@@ -55,16 +62,18 @@ pub fn dump_request<T: serde::Serialize>(endpoint: &str, seq: u64, body: &T) {
 pub fn dump_response<T: serde::Serialize>(
     endpoint: &str,
     seq: u64,
+    request_id: &str,
     body: &T,
     is_stream: bool,
 ) {
-    write_event("response", endpoint, seq, body, Some(is_stream));
+    write_event("response", endpoint, seq, request_id, body, Some(is_stream));
 }
 
 fn write_event<T: serde::Serialize>(
     kind: &'static str,
     endpoint: &str,
     seq: u64,
+    request_id: &str,
     body: &T,
     is_stream: Option<bool>,
 ) {
@@ -84,6 +93,7 @@ fn write_event<T: serde::Serialize>(
             kind = kind,
             endpoint = endpoint,
             seq = seq,
+            request_id = request_id,
             stream = s,
             ts = %ts,
             body = %body_json,
@@ -93,6 +103,7 @@ fn write_event<T: serde::Serialize>(
             kind = kind,
             endpoint = endpoint,
             seq = seq,
+            request_id = request_id,
             ts = %ts,
             body = %body_json,
         ),

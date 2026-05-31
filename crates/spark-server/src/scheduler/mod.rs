@@ -388,15 +388,30 @@ pub fn run(
         }
 
         let tick_total_ms = tick_start.elapsed().as_micros() as f64 / 1000.0;
-        // Single-line per-tick gap profile. Only emitted when there was
-        // decode work, since idle ticks (active.is_empty() above) skip
-        // straight to the next iteration.
-        tracing::info!(
-            target: "atlas::tick",
-            "tick n={active_n_for_log} total={tick_total_ms:.2}ms gap_in={inter_tick_gap_ms:.2}ms \
-             drain={phase_drain_ms:.2}ms start={phase_start_ms:.2}ms cont={phase_cont_ms:.2}ms \
-             decode={phase_decode_ms:.2}ms retire={phase_retire_ms:.2}ms",
-        );
+        // Per-tick profile, fired once per ACTIVE REQUEST so the line
+        // carries a `request_id` structured field. Operators can then
+        // `journalctl REQUEST_ID=<uuid>` (when emission uses
+        // tracing-journald native fields) OR LogQL-filter the JSON-on-
+        // stderr stream by `request_id` to see the per-tick decode
+        // trajectory of a specific request. Per-tick wall is shared
+        // across the active set (they all occupied the same tick); the
+        // operator divides by `active_n_for_log` if they want
+        // per-stream attribution.
+        for seq in active.iter() {
+            tracing::info!(
+                target: "atlas::tick",
+                request_id = %seq.request_id,
+                active_n = active_n_for_log,
+                tick_total_ms,
+                gap_in_ms = inter_tick_gap_ms,
+                drain_ms = phase_drain_ms,
+                start_ms = phase_start_ms,
+                cont_ms = phase_cont_ms,
+                decode_ms = phase_decode_ms,
+                retire_ms = phase_retire_ms,
+                "tick",
+            );
+        }
         last_tick_end = Some(std::time::Instant::now());
     }
 

@@ -60,6 +60,7 @@ use super::sanitizer::*;
 
 pub(super) async fn responses_endpoint_stream(
     state: State<Arc<AppState>>,
+    request_id: crate::request_id::RequestId,
     mut chat_req: ChatCompletionRequest,
     metadata: Option<std::collections::HashMap<String, String>>,
     store_flag: bool,
@@ -103,7 +104,7 @@ pub(super) async fn responses_endpoint_stream(
 
     // Run the chat-completions streaming handler (re-using the full
     // pipeline: scheduler, tool detection, thinking, logprobs, ...).
-    let chat_resp = chat_completions_inner(state.0, None, chat_req, None).await;
+    let chat_resp = chat_completions_inner(state.0, None, chat_req, None, request_id).await;
     let (parts, body) = chat_resp.into_parts();
     if !parts.status.is_success() {
         return Response::from_parts(parts, body);

@@ -49,6 +49,15 @@ pub enum GrammarSpec {
 pub enum InferenceRequest {
     /// Blocking: waits for full response.
     Blocking {
+        /// Per-request identifier (Phase D). Extracted from
+        /// `x-request-id` HTTP header by the API entry point, or
+        /// generated server-side as a UUIDv7 when absent. Carried
+        /// onto `ActiveSeq` so per-tick scheduler logs can attribute
+        /// metrics back to a specific request, and echoed in the
+        /// response (HTTP header + `Usage.request_id`) so the client
+        /// (heim agent) can pin it on session-DB entries for
+        /// cross-store provenance.
+        request_id: String,
         prompt_tokens: Vec<u32>,
         /// Session hash for SSM snapshot isolation (hash of first 64 prompt tokens).
         session_hash: u64,
@@ -119,6 +128,8 @@ pub enum InferenceRequest {
     },
     /// Streaming: sends tokens as they're generated.
     Streaming {
+        /// Per-request identifier (Phase D — see Blocking variant).
+        request_id: String,
         prompt_tokens: Vec<u32>,
         /// Session hash for SSM snapshot isolation (hash of first 64 prompt tokens).
         session_hash: u64,

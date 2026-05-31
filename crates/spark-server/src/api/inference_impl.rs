@@ -63,6 +63,16 @@ impl InferenceRequest {
         }
     }
 
+    /// Per-request identifier (UUIDv7 or echoed `x-request-id`).
+    /// Carried onto `ActiveSeq` so per-tick scheduler logs can
+    /// attribute work back to the originating request.
+    pub fn request_id(&self) -> &str {
+        match self {
+            InferenceRequest::Blocking { request_id, .. } => request_id,
+            InferenceRequest::Streaming { request_id, .. } => request_id,
+        }
+    }
+
     /// Preprocessed image data, consumed by the scheduler before prefill.
     pub fn take_image_pixels(&mut self) -> Vec<(Vec<f32>, usize, usize)> {
         match self {

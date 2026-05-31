@@ -25,6 +25,7 @@ pub(super) async fn dispatch_streaming(
     req: &ChatCompletionRequest,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     dump_seq: Option<u64>,
+    request_id: crate::request_id::RequestId,
     prompt_tokens: Vec<u32>,
     session_hash: u64,
     image_pixels: Vec<(Vec<f32>, usize, usize)>,
@@ -77,6 +78,7 @@ pub(super) async fn dispatch_streaming(
     let f44_cache = f39_build_failure_cache(&req.messages);
     match chat_completions_stream(
         state,
+        request_id,
         prompt_tokens,
         session_hash,
         image_pixels,

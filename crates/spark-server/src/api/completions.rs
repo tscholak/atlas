@@ -55,8 +55,10 @@ use super::sanitizer::*;
 
 pub async fn completions(
     State(state): State<Arc<AppState>>,
+    request_id: axum::extract::Extension<crate::request_id::RequestId>,
     req: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Response {
+    let request_id = request_id.0;
     let Json(req) = match req {
         Ok(r) => r,
         Err(e) => {
@@ -118,6 +120,7 @@ pub async fn completions(
     if req.stream {
         return match completions_stream(
             state,
+            request_id,
             prompt_tokens,
             req.max_tokens,
             temperature,
@@ -143,6 +146,7 @@ pub async fn completions(
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
     let request = InferenceRequest::Blocking {
+        request_id: request_id.as_str().to_string(),
         prompt_tokens,
         session_hash,
         image_pixels: Vec::new(),
@@ -255,6 +259,7 @@ pub async fn completions(
 /// SSE streaming path for legacy completions.
 pub(super) async fn completions_stream(
     state: Arc<AppState>,
+    request_id: crate::request_id::RequestId,
     prompt_tokens: Vec<u32>,
     max_tokens: usize,
     temperature: f32,
@@ -275,6 +280,7 @@ pub(super) async fn completions_stream(
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
     let request = InferenceRequest::Streaming {
+        request_id: request_id.as_str().to_string(),
         prompt_tokens,
         session_hash,
         image_pixels: Vec::new(),

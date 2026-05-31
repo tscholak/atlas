@@ -30,6 +30,10 @@ pub(super) enum ResponseSink {
 
 /// An in-progress chunked prefill (prompt being processed in chunks).
 pub(super) struct PrefillInProgress {
+    /// Per-request identifier (Phase D — carried from
+    /// `InferenceRequest` so it flows through to `ActiveSeq`
+    /// promotion).
+    pub request_id: String,
     pub prompt_tokens: Vec<u32>,
     pub session_hash: u64,
     pub seq: SequenceState,
@@ -75,6 +79,12 @@ pub(super) struct PrefillInProgress {
 
 /// An in-flight sequence participating in batched decode.
 pub(super) struct ActiveSeq {
+    /// Per-request identifier (Phase D). Carried from the
+    /// `InferenceRequest` that birthed this seq so per-tick logs and
+    /// other scheduler-side tracing events can attribute work back
+    /// to the originating request — and downstream operators can
+    /// `journalctl REQUEST_ID=<uuid>` to see the full trace.
+    pub request_id: String,
     pub seq: SequenceState,
     pub session_hash: u64,
     pub last_token: u32,
@@ -182,6 +192,10 @@ pub(super) struct ActiveSeq {
 
 /// A sequence that has been swapped out to disk (KV + SSM state saved to file).
 pub(super) struct SwappedSeq {
+    /// Per-request identifier (Phase D) carried through the swap/resume
+    /// round-trip so resumed sequences retain their original request_id
+    /// and per-tick log attribution stays continuous.
+    pub request_id: String,
     pub tokens: Vec<u32>,
     pub session_hash: u64,
     pub seq_len: usize,

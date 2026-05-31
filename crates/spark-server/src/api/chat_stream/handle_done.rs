@@ -222,6 +222,7 @@ pub(super) fn handle_done(
         crate::request_dumper::dump_response(
             "/v1/chat/completions",
             seq,
+            ctx.request_id.as_str(),
             &body,
             true,
         );

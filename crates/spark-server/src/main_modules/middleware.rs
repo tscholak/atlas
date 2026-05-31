@@ -5,37 +5,42 @@
 use std::sync::Arc;
 
 use crate::main_modules::AppState;
-use crate::{openai, rate_limiter};
+use crate::rate_limiter;
 
 /// OpenAI-compatible observability headers. Injects on every `/v1/*`
 /// response:
-/// - `x-request-id`: UUID v4 generated per-request (re-used if client
-///   supplied one, letting callers correlate logs end-to-end).
+/// - `x-request-id`: UUIDv7 generated per-request (re-used verbatim
+///   if the client supplied one). Phase D switched from `req_<v4>`
+///   to bare UUIDv7 for monotonic-by-time sorting in log aggregators
+///   and to match the shape the heim agent attaches to TurnMetrics.
 /// - `openai-processing-ms`: server wall-clock time in milliseconds.
 /// - `x-ratelimit-*`: static "unlimited" stubs so clients that
 ///   parse them for backoff don't treat missing headers as unlimited
 ///   (some SDKs assume 0 = exhausted).
 /// - `openai-organization`, `openai-version`: static stubs for
 ///   parity with `api.openai.com` — several wrappers log these.
+///
+/// Also installs the resolved [`RequestId`] as a request extension so
+/// downstream handlers can pull it via `Extension<RequestId>` and
+/// thread it onto the `InferenceRequest` they push to the scheduler.
 pub(crate) async fn openai_observability_middleware(
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
     use axum::http::{HeaderName, HeaderValue};
     let start = std::time::Instant::now();
     let is_v1 = req.uri().path().starts_with("/v1/");
-    let incoming_req_id = req
-        .headers()
-        .get("x-request-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    let request_id = crate::request_id::RequestId::from_headers(req.headers());
+    // Install in request extensions BEFORE running inner handlers so
+    // they can extract via Extension<RequestId>.
+    req.extensions_mut().insert(request_id.clone());
+
     let mut resp = next.run(req).await;
     if !is_v1 {
         return resp;
     }
     let headers = resp.headers_mut();
-    let rid = incoming_req_id.unwrap_or_else(|| format!("req_{}", openai::uuid_v4()));
-    if let Ok(v) = HeaderValue::from_str(&rid) {
+    if let Some(v) = request_id.to_header_value() {
         headers.insert(HeaderName::from_static("x-request-id"), v);
     }
     let elapsed_ms = start.elapsed().as_millis();

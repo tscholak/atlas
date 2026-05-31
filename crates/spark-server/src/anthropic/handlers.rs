@@ -26,7 +26,12 @@ use super::types::*;
 /// response back into Anthropic format. The Anthropic-specific surface is
 /// strictly format conversion — no policy or sampling decisions are made
 /// here.
-pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Bytes) -> Response {
+pub async fn messages(
+    State(state): State<Arc<AppState>>,
+    request_id: axum::extract::Extension<crate::request_id::RequestId>,
+    body: axum::body::Bytes,
+) -> Response {
+    let request_id = request_id.0;
     // 1. Parse the Anthropic request.
     let req: MessagesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -61,7 +66,12 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
         match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(v) => {
                 let seq = crate::request_dumper::next_seq();
-                crate::request_dumper::dump_request("/v1/messages", seq, &v);
+                crate::request_dumper::dump_request(
+                    "/v1/messages",
+                    seq,
+                    request_id.as_str(),
+                    &v,
+                );
                 Some(seq)
             }
             Err(_) => None,
@@ -97,7 +107,13 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
 
     // 4. Run the shared OpenAI pipeline. All sanitization, salvage,
     //    watchdog, sampling preset, and prompt mutation logic lives there.
-    let chat_resp = crate::api::chat_completions_inner(state.clone(), None, chat_req, None).await;
+    let chat_resp = crate::api::chat_completions_inner(
+        state.clone(),
+        None,
+        chat_req,
+        None,
+        request_id.clone(),
+    ).await;
 
     // 5. Translate the response back to Anthropic shape.
     if !chat_resp.status().is_success() {
@@ -164,6 +180,7 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
             crate::request_dumper::dump_response(
                 "/v1/messages",
                 seq,
+                request_id.as_str(),
                 &messages_resp,
                 false,
             );

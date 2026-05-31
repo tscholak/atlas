@@ -46,6 +46,7 @@ use state::StreamState;
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn chat_completions_stream(
     state: Arc<AppState>,
+    request_id: crate::request_id::RequestId,
     prompt_tokens: Vec<u32>,
     session_hash: u64,
     image_pixels: Vec<(Vec<f32>, usize, usize)>,
@@ -103,6 +104,7 @@ pub(crate) async fn chat_completions_stream(
     // no need for scheduler tracking.
     let scheduler_thinking = enable_thinking;
     let request = InferenceRequest::Streaming {
+        request_id: request_id.as_str().to_string(),
         prompt_tokens,
         session_hash,
         image_pixels,
@@ -189,6 +191,7 @@ pub(crate) async fn chat_completions_stream(
         req_stream_include_usage,
         req_ctx,
         dump_seq,
+        request_id,
         f44_cache,
         f44_cache_active,
     };

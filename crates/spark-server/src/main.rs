@@ -47,6 +47,7 @@ mod rate_limiter;
 pub mod reasoning_parser;
 mod refusal;
 mod request_dumper;
+mod request_id;
 mod response_store;
 mod retrieval_heads;
 mod scheduler;
