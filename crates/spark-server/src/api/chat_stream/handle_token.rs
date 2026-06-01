@@ -16,7 +16,7 @@ use crate::tool_parser;
 use super::super::failures::{bump_f12_tool_call_count, check_loop_watchdog};
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
-use super::state::StreamState;
+use super::state::{StreamPhase, StreamState};
 use super::tool_handlers::{
     handle_complete_tool_call, handle_tool_call_delta, handle_tool_call_end, handle_tool_call_start,
 };
@@ -25,128 +25,23 @@ type SseVec = Vec<Result<Event, std::convert::Infallible>>;
 
 /// Process one token. Returns the SSE events to forward to the
 /// client (empty `Vec` is valid).
+///
+/// Single `DecodeStream` (created with `skip_special_tokens=false` so
+/// `</end_tag>` arrives as literal text) feeds a two-state machine:
+/// `Thinking` buffers decoded text and emits incremental
+/// `reasoning_chunk` deltas, watching for the configured reasoning
+/// parser's end-tag substring; on match, the pre-tag text is flushed,
+/// the post-tag text is trimmed of leading whitespace, and the FSM
+/// transitions to `Content` where the existing tool-detector +
+/// sanitiser + watchdog pipeline runs unchanged. The thinking phase
+/// uses `ReasoningParser::cleanup_reasoning_leaks` for any model-
+/// specific quirk removal (stray protocol-tag fragments, role-word
+/// repetition loops, etc.) — see the trait impl on
+/// `QwenReasoningParser`.
 pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> SseVec {
     let mut sse_events: SseVec = Vec::new();
-    state.all_toks.push(tok);
 
-    // ── Thinking-phase: token-ID based </think> detection ────────────
-    if !state.thinking_done {
-        if let Some(end_id) = ctx.state.think_end_token_id
-            && tok == end_id
-        {
-            state.thinking_done = true;
-            // Emit only the residual reasoning delta not yet sent
-            // by incremental streaming (e.g. trailing bytes held
-            // back due to incomplete UTF-8 at prior token boundary).
-            // The full reasoning has already been streamed
-            // incrementally via reasoning_chunk deltas above —
-            // re-emitting the full text here would double it.
-            if ctx.enable_thinking && state.all_toks.len() > 1 {
-                let full = ctx
-                    .state
-                    .tokenizer
-                    .decode(&state.all_toks[..state.all_toks.len() - 1])
-                    .unwrap_or_default();
-                let stable = full.trim_end_matches('\u{FFFD}');
-                if stable.len() > state.emitted {
-                    let residual = &stable[state.emitted..];
-                    if !residual.trim().is_empty() {
-                        let chunk = ChatCompletionChunk::reasoning_chunk(
-                            &ctx.model,
-                            &ctx.id,
-                            residual.to_string(),
-                        );
-                        let json = serde_json::to_string(&chunk).unwrap_or_default();
-                        sse_events.push(Ok(Event::default().data(json)));
-                    }
-                }
-            }
-            // Reset tool detector to clear any thinking-era tag fragments.
-            if let Some(ref mut det) = state.detector {
-                det.reset();
-            }
-            state.emitted = 0; // Reset — next decode will be content-only
-            state.all_toks.clear(); // Clear thinking tokens from accumulator
-            return sse_events;
-        }
-        // Still in thinking — accumulate but don't emit as content
-        if ctx.enable_thinking {
-            // Open thinking: emit as reasoning_content
-            let full = ctx
-                .state
-                .tokenizer
-                .decode(&state.all_toks)
-                .unwrap_or_default();
-            let stable_end = full.trim_end_matches('\u{FFFD}').len();
-            if stable_end > state.emitted {
-                let mut cleaned = full[state.emitted..stable_end].to_string();
-                state.emitted = stable_end;
-                // Strip format tokens that shouldn't appear in thinking
-                cleaned = cleaned.replace("<think>", "");
-                if let Some(rest) = cleaned.strip_prefix("assistant\n") {
-                    cleaned = rest.to_string();
-                } else if let Some(rest) = cleaned.strip_prefix("assistant") {
-                    cleaned = rest.to_string();
-                }
-                while let Some(start) = cleaned.find("<tool_call>") {
-                    if let Some(end) = cleaned[start..].find("</tool_call>") {
-                        cleaned = format!(
-                            "{}{}",
-                            &cleaned[..start],
-                            &cleaned[start + end + "</tool_call>".len()..]
-                        );
-                    } else {
-                        cleaned = cleaned[..start].to_string();
-                        break;
-                    }
-                }
-                if let Some(start) = cleaned.find("<function=") {
-                    cleaned = cleaned[..start].to_string();
-                }
-                // Strip leaked tool-call closing tags from reasoning
-                // (observed pattern: `</parameter></function>` right
-                // before a role-word repetition loop — the model
-                // emits them as BPE tokens after the real tool call
-                // has already been structured by the detector).
-                for tag in &["</parameter>", "</function>", "</tool_call>"] {
-                    cleaned = cleaned.replace(tag, "");
-                }
-                // Collapse role-word repetition loops in reasoning
-                // (Qwen3.5/3.6 post-tool-call hallucination). Pair-
-                // collapse `userX...userX` → "" until no adjacent
-                // pairs remain; then strip surviving line-bounded
-                // standalones (`\nuser\n` → `\n`).
-                for word in &["user", "assistant", "tool"] {
-                    let pair = format!("{word}{word}");
-                    while cleaned.contains(&pair) {
-                        cleaned = cleaned.replace(&pair, "");
-                    }
-                    let nl_form = format!("\n{word}\n");
-                    while cleaned.contains(&nl_form) {
-                        cleaned = cleaned.replace(&nl_form, "\n");
-                    }
-                }
-                // F19: final structured sanitisation pass catches
-                // any leak markers the hand-rolled cleanups missed.
-                let cleaned = sanitize_content_chunk(
-                    &cleaned,
-                    &mut state.reasoning_tag_scan_buf,
-                    &mut state.reasoning_suppressing_leak,
-                    &mut state.reasoning_inside_envelope,
-                    &ctx.leak_markers,
-                );
-                if !cleaned.trim().is_empty() {
-                    let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, cleaned);
-                    let json = serde_json::to_string(&chunk).unwrap_or_default();
-                    sse_events.push(Ok(Event::default().data(json)));
-                }
-            }
-        }
-        return sse_events;
-    }
-
-    // ── Content phase: incremental decode via DecodeStream ───────────
-    let decoder = state.content_decoder.get_or_insert_with(|| {
+    let decoder = state.decoder.get_or_insert_with(|| {
         // SAFETY: ctx.state (Arc<AppState>) is owned by the closure
         // and lives for its entire duration. The DecodeStream borrows
         // &Tokenizer from it. We extend the lifetime because the Arc
@@ -154,10 +49,16 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
         // the DecodeStream).
         let tokenizer_ref: &'static crate::tokenizer::ChatTokenizer =
             unsafe { &*(&ctx.state.tokenizer as *const crate::tokenizer::ChatTokenizer) };
-        tokenizer_ref.streaming_decoder(true)
+        // `skip_special_tokens=false`: protocol markers like
+        // `</think>` reach the state machine as literal text so we
+        // can substring-match them deterministically. ChatML stop
+        // specials (`<|im_end|>` etc.) are filtered out at the
+        // scheduler layer (`emit_step.rs:27-46`) before they enter
+        // this function — they never appear in the decoded stream.
+        tokenizer_ref.streaming_decoder(false)
     });
-    let mut delta = match decoder.step(tok) {
-        Ok(Some(chunk)) => chunk,
+    let chunk = match decoder.step(tok) {
+        Ok(Some(s)) => s,
         Ok(None) => return sse_events,
         Err(e) => {
             tracing::warn!("Streaming decoder error: {e:?}");
@@ -165,26 +66,53 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
         }
     };
 
-    // Strip residual think tags from content after thinking is done.
-    if state.thinking_done {
-        for tag in &[
-            "</think>",
-            "</thinking>",
-            "<thinking>",
-            "</analysis>",
-            "<analysis>",
-        ] {
-            while let Some(pos) = delta.find(tag) {
-                delta = format!("{}{}", &delta[..pos], delta[pos + tag.len()..].trim_start());
-            }
+    // ── Thinking state ───────────────────────────────────────────────
+    // Buffer-and-substring-match the configured reasoning parser's
+    // end-tag. The `cleanup_reasoning_leaks` + `sanitize_content_chunk`
+    // pipeline runs on the SSE-emitted prefix only; the tail held back
+    // for tag-straddle protection is re-considered on the next token.
+    let delta = match state.phase() {
+        StreamPhase::Content | StreamPhase::Stopped => chunk,
+        StreamPhase::Thinking => match thinking_step(state, ctx, chunk, &mut sse_events) {
+            Some(post_tag) => post_tag,
+            None => return sse_events,
+        },
+    };
+
+    let mut delta = delta;
+
+    // ── Content phase ────────────────────────────────────────────────
+    // Trim leading whitespace at the start of the Content phase. Qwen
+    // emits `</think>` and the following `\n\n` as separate tokens, so
+    // trimming at the FSM transition only catches the in-chunk case;
+    // we have to keep trimming until the first non-whitespace delta
+    // arrives.
+    delta = trim_until_content_started(delta, &mut state.content_started);
+
+    // Strip residual think tags from content (defensive — the state
+    // machine's substring-match already consumed the canonical
+    // `</think>`, but the model can hallucinate `</thinking>`,
+    // `<thinking>`, `<analysis>`, `</analysis>` mid-content).
+    for tag in &[
+        "</think>",
+        "</thinking>",
+        "<thinking>",
+        "</analysis>",
+        "<analysis>",
+    ] {
+        while let Some(pos) = delta.find(tag) {
+            delta = format!("{}{}", &delta[..pos], delta[pos + tag.len()..].trim_start());
         }
-        // If model re-opens <think>, suppress content from <think> onward.
-        if let Some(pos) = delta.find("<think>") {
-            delta = delta[..pos].to_string();
-            state.thinking_done = false;
-            state.all_toks.clear();
-            state.emitted = 0;
-        }
+    }
+    // If the model re-opens `<think>` mid-content, truncate the delta
+    // and drop back into Thinking state. Subsequent tokens accumulate
+    // into `pending_pre_tag` until the next `</end_tag>` arrives.
+    // `enter_thinking` also resets `content_started` so the next
+    // Thinking → Content transition strips the leading whitespace
+    // boundary again.
+    if let Some(pos) = delta.find("<think>") {
+        delta = delta[..pos].to_string();
+        state.enter_thinking();
     }
 
     // Bare role-literal leak (Qwen3.5/3.6) — companion to the
@@ -202,7 +130,7 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
     }
 
     // Multi-token stop sequences via string matching.
-    if !ctx.stop_strings.is_empty() && !state.stop_string_triggered {
+    if !ctx.stop_strings.is_empty() && !state.is_stopped() {
         state.accumulated_content.push_str(&delta);
         for stop_str in &ctx.stop_strings {
             if let Some(pos) = state.accumulated_content.find(stop_str.as_str()) {
@@ -213,16 +141,16 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
                 } else {
                     delta = String::new();
                 }
-                state.stop_string_triggered = true;
+                state.mark_stopped();
                 break;
             }
         }
-        if state.stop_string_triggered && delta.is_empty() {
+        if state.is_stopped() && delta.is_empty() {
             return sse_events;
         }
     }
 
-    if state.stop_string_triggered {
+    if state.is_stopped() {
         if !delta.is_empty() {
             let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, delta);
             let json = serde_json::to_string(&chunk).unwrap_or_default();
@@ -286,6 +214,104 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
     sse_events
 }
 
+/// Process one decoder chunk while in Thinking phase.
+///
+/// Returns:
+/// - `Some(post_tag_text)` when the end-tag was found and the FSM
+///   transitioned to Content. The caller continues processing the
+///   post-tag remainder as a content delta.
+/// - `None` when nothing flows through to Content this token (either
+///   the end-tag wasn't seen yet and we're still buffering, or there
+///   was no post-tag text after the boundary).
+///
+/// `sse_events` accumulates `reasoning_content` SSE deltas emitted
+/// during this step.
+fn thinking_step(
+    state: &mut StreamState,
+    ctx: &StreamCtx,
+    chunk: String,
+    sse_events: &mut SseVec,
+) -> Option<String> {
+    let Some(end_tag) = ctx
+        .state
+        .reasoning_parser
+        .as_deref()
+        .map(|p| p.end_tag().to_string())
+    else {
+        // No reasoning parser configured. Treat the stream as
+        // content-only from the start.
+        state.enter_content();
+        return Some(chunk);
+    };
+    state.pending_pre_tag.push_str(&chunk);
+    if let Some(pos) = state.pending_pre_tag.find(end_tag.as_str()) {
+        // End-tag found: emit pre-tag prefix as reasoning, trim the
+        // tag itself plus any leading whitespace from the post-tag
+        // remainder, transition to Content.
+        let after_tag_start = pos + end_tag.len();
+        let pre = state.pending_pre_tag[..pos].to_string();
+        let after = state.pending_pre_tag[after_tag_start..]
+            .trim_start()
+            .to_string();
+        state.pending_pre_tag.clear();
+        if ctx.enable_thinking {
+            emit_thinking(sse_events, state, ctx, &pre);
+        }
+        state.enter_content();
+        if after.is_empty() { None } else { Some(after) }
+    } else {
+        // No tag yet: flush everything except the last
+        // `end_tag.len() - 1` bytes (which could be the start of a
+        // tag straddling the next decoder step). Tail-hold is sliced
+        // on a UTF-8 char boundary.
+        let hold = end_tag.len().saturating_sub(1);
+        let total = state.pending_pre_tag.len();
+        if total > hold {
+            let mut split = total - hold;
+            while split > 0 && !state.pending_pre_tag.is_char_boundary(split) {
+                split -= 1;
+            }
+            let emit_text: String = state.pending_pre_tag.drain(..split).collect();
+            if ctx.enable_thinking {
+                emit_thinking(sse_events, state, ctx, &emit_text);
+            }
+        }
+        None
+    }
+}
+
+/// Thinking-state emit: apply the active reasoning parser's
+/// `cleanup_reasoning_leaks` (Qwen-specific quirks live there), then
+/// run the structured leak-marker sanitiser, then push a
+/// `reasoning_chunk` SSE event if anything non-whitespace remains.
+fn emit_thinking(sse_events: &mut SseVec, state: &mut StreamState, ctx: &StreamCtx, text: &str) {
+    let cleaned = ctx
+        .state
+        .reasoning_parser
+        .as_deref()
+        .map(|p| p.cleanup_reasoning_leaks(text))
+        .unwrap_or_else(|| text.to_string());
+    let sanitized = sanitize_content_chunk(
+        &cleaned,
+        &mut state.reasoning_tag_scan_buf,
+        &mut state.reasoning_suppressing_leak,
+        &mut state.reasoning_inside_envelope,
+        &ctx.leak_markers,
+    );
+    // Emit on any non-empty sanitised payload, not just non-whitespace.
+    // The state machine slices the decoded stream at arbitrary byte
+    // boundaries, so a single drain can land on a chunk that's just a
+    // space or newline between two tokens. Dropping those whitespace-
+    // only chunks (as `!trim().is_empty()` did) is what produces
+    // `thefarmer`/`ina week`/`perday` artifacts when joining the SSE
+    // deltas back together client-side.
+    if !sanitized.is_empty() {
+        let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, sanitized);
+        let json = serde_json::to_string(&chunk).unwrap_or_default();
+        sse_events.push(Ok(Event::default().data(json)));
+    }
+}
+
 /// Common processing for a sanitized content chunk: SimHash semantic
 /// guard, token-level loop watchdog, salvage on trip, otherwise
 /// emit a `content_chunk`. Returns `Some(events)` when the watchdog
@@ -347,7 +373,7 @@ fn process_detector_content(
             );
         }
         state.loop_watchdog_triggered = true;
-        state.stop_string_triggered = true;
+        state.mark_stopped();
 
         let salvaged =
             crate::tool_salvage::salvage(&state.loop_scan_buf, &ctx.tool_defs_for_backfill);
@@ -358,11 +384,20 @@ fn process_detector_content(
                 block_index = idx,
                 "watchdog salvage: emitting synthetic tool_call",
             );
+            // Local-bool bridge: the helper takes `&mut bool`; passing
+            // a method-derived borrow alongside another `&mut state.X`
+            // field would conflict at the borrow checker, so we bounce
+            // through a local and fold back into the FSM if the helper
+            // tripped the cap.
+            let mut stop_local = state.is_stopped();
             bump_f12_tool_call_count(
                 &mut state.tool_calls_emitted_count,
                 ctx.max_tool_calls_per_response,
-                &mut state.stop_string_triggered,
+                &mut stop_local,
             );
+            if stop_local {
+                state.mark_stopped();
+            }
             let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
             events.push(Ok(
                 Event::default().data(serde_json::to_string(&start).unwrap_or_default())
@@ -406,4 +441,68 @@ fn detector_content_arm(state: &mut StreamState, ctx: &StreamCtx, text: &str) ->
         &ctx.leak_markers,
     );
     process_detector_content(state, ctx, &sanitized)
+}
+
+/// Strip leading whitespace from the Content-phase delta until the
+/// first non-whitespace byte is observed; flip `content_started` true
+/// once that happens. This bridges the `</think>\n\n` boundary when
+/// the tokenizer emits the special-token `</think>` and the trailing
+/// `\n\n` on separate decoder steps — the FSM transition-time
+/// `trim_start` only catches in-chunk whitespace.
+fn trim_until_content_started(delta: String, content_started: &mut bool) -> String {
+    if *content_started {
+        return delta;
+    }
+    let trimmed = delta.trim_start();
+    let out = if trimmed.len() < delta.len() {
+        trimmed.to_string()
+    } else {
+        delta
+    };
+    if !out.is_empty() {
+        *content_started = true;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trim_until_content_started_strips_leading_newlines_on_first_token() {
+        let mut started = false;
+        let out = trim_until_content_started("\n\nLet's".to_string(), &mut started);
+        assert_eq!(out, "Let's");
+        assert!(started, "first non-whitespace delta arms content_started");
+    }
+
+    #[test]
+    fn trim_until_content_started_holds_when_chunk_is_pure_whitespace() {
+        let mut started = false;
+        let out = trim_until_content_started("\n".to_string(), &mut started);
+        assert_eq!(out, "");
+        assert!(
+            !started,
+            "pure-whitespace delta keeps the trim active for the next chunk"
+        );
+    }
+
+    #[test]
+    fn trim_until_content_started_passes_through_after_first_content() {
+        let mut started = true;
+        let out = trim_until_content_started("  spaces preserved".to_string(), &mut started);
+        assert_eq!(
+            out, "  spaces preserved",
+            "interior whitespace must survive once content has started"
+        );
+    }
+
+    #[test]
+    fn trim_until_content_started_keeps_interior_whitespace_on_arming_delta() {
+        let mut started = false;
+        let out = trim_until_content_started("\nLet's\n  more".to_string(), &mut started);
+        assert_eq!(out, "Let's\n  more");
+        assert!(started);
+    }
 }

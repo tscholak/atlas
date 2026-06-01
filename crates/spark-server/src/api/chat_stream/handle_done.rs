@@ -127,11 +127,15 @@ pub(super) fn handle_done(
                 block_index = idx,
                 "tool_salvage: emitting synthetic tool_call from prose",
             );
+            let mut stop_local = state.is_stopped();
             bump_f12_tool_call_count(
                 &mut state.tool_calls_emitted_count,
                 ctx.max_tool_calls_per_response,
-                &mut state.stop_string_triggered,
+                &mut stop_local,
             );
+            if stop_local {
+                state.mark_stopped();
+            }
             let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
             sse_events.push(Ok(
                 Event::default().data(serde_json::to_string(&start).unwrap_or_default())
@@ -217,7 +221,7 @@ pub(super) fn handle_done(
             "content": state.refusal_scan_buf,
             "has_tool_calls": has_tool_calls,
             "usage": usage_for_dump,
-            "stop_string_triggered": state.stop_string_triggered,
+            "stop_string_triggered": state.is_stopped(),
             "loop_watchdog_triggered": state.loop_watchdog_triggered,
             "_note": "Synthesized from post-sanitizer accumulators; \
                       per-chunk capture is a follow-up.",

@@ -52,7 +52,7 @@ pub(super) fn handle_complete_tool_call(
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
-        state.stop_string_triggered = true;
+        state.mark_stopped();
     } else if state
         .tool_arg_dedup
         .check(&tc.function.name, &tc.function.arguments)
@@ -61,7 +61,7 @@ pub(super) fn handle_complete_tool_call(
             tool = %tc.function.name,
             "tool-arg dedup tripped: refusing redundant tool_call and ending response"
         );
-        state.stop_string_triggered = true;
+        state.mark_stopped();
     } else {
         // Bug-2 name-run cap (mirrors handle_tool_call_end): catches
         // runaway loops in the complete-tool-call path that
@@ -78,13 +78,17 @@ pub(super) fn handle_complete_tool_call(
                 "Bug-2 name-run cap tripped (complete-call path): {run_len} successive `{}` tool calls; ending response",
                 tc.function.name
             );
-            state.stop_string_triggered = true;
+            state.mark_stopped();
         }
+        let mut stop_local = state.is_stopped();
         bump_f12_tool_call_count(
             &mut state.tool_calls_emitted_count,
             ctx.max_tool_calls_per_response,
-            &mut state.stop_string_triggered,
+            &mut stop_local,
         );
+        if stop_local {
+            state.mark_stopped();
+        }
         // Successful complete-call path — log + metric to match the
         // blocking and incremental-streaming paths.
         let preview: String = tc.function.arguments.chars().take(120).collect();
@@ -142,11 +146,15 @@ pub(super) fn handle_tool_call_start(
             arguments: String::new(),
         },
     };
+    let mut stop_local = state.is_stopped();
     bump_f12_tool_call_count(
         &mut state.tool_calls_emitted_count,
         ctx.max_tool_calls_per_response,
-        &mut state.stop_string_triggered,
+        &mut stop_local,
     );
+    if stop_local {
+        state.mark_stopped();
+    }
     let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, &tc, idx);
     sse_events.push(Ok(
         Event::default().data(serde_json::to_string(&start).unwrap_or_default())
@@ -206,8 +214,10 @@ pub(super) fn handle_tool_call_delta(
             sse_events.push(Ok(
                 Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
             ));
-            state.stop_string_triggered = true;
+            // Drop `entry` borrow (release `state.streaming_tool_args`)
+            // before calling `state.mark_stopped()` (needs `&mut state`).
             entry.1.push_str(&args);
+            state.mark_stopped();
             return;
         }
         emit_args = tc.function.arguments.clone();
@@ -244,7 +254,7 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
                 tool = %name,
                 "F11 within-response dedup tripped: 2+ identical streaming tool calls; ending response"
             );
-            state.stop_string_triggered = true;
+            state.mark_stopped();
         } else if ctx.f44_cache_active
             && f44_check_permanent_failure(&ctx.f44_cache, &name, &args_json)
         {
@@ -252,22 +262,22 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
                 tool = %name,
                 "F44 streaming circuit-breaker tripped: tool_call matches a permanently-failed prior call; ending response"
             );
-            state.stop_string_triggered = true;
+            state.mark_stopped();
         }
         let run_len = match &state.name_run {
             Some((prev, n)) if prev == &name => n + 1,
             _ => 1,
         };
         state.name_run = Some((name.clone(), run_len));
-        if run_len >= MAX_CONSEC_SAME_NAME_CALLS && !state.stop_string_triggered {
+        if run_len >= MAX_CONSEC_SAME_NAME_CALLS && !state.is_stopped() {
             tracing::warn!(
                 tool = %name,
                 run = run_len,
                 "Bug-2 name-run cap tripped: {run_len} successive `{name}` tool calls; ending response (F11 missed because args drift)"
             );
-            state.stop_string_triggered = true;
+            state.mark_stopped();
         }
-        if !state.stop_string_triggered {
+        if !state.is_stopped() {
             // Successful streaming tool call — log + metric to match the
             // blocking and complete-call paths.
             let preview: String = args_json.chars().take(120).collect();

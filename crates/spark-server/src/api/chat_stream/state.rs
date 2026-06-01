@@ -14,23 +14,63 @@ use std::collections::HashMap;
 
 use crate::tool_parser;
 
+/// Major phase of the chat-stream emit FSM. The decoder feeds one
+/// stream of tokens into this state machine; the phase determines
+/// where the decoded bytes go.
+///
+///   Thinking ── substring match of `</end_tag>` ──► Content
+///   Content  ── substring match of `<start_tag>` (re-open) ──► Thinking
+///   Thinking | Content ── stop string / watchdog / tool-cap trip ──► Stopped
+///
+/// `Stopped` is terminal: no further content is emitted to the SSE
+/// stream, though the `handle_done` arm still runs to write the
+/// finish_reason and trailing usage block.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum StreamPhase {
+    Thinking,
+    Content,
+    Stopped,
+}
+
 pub(super) struct StreamState {
-    /// Token IDs accumulated since the last reset (cleared at the
-    /// `</think>` boundary so post-thinking content decodes cleanly).
-    pub(super) all_toks: Vec<u32>,
-    /// Byte offset into the thinking-phase decoded text already
-    /// emitted as `reasoning_chunk` deltas.
-    pub(super) emitted: usize,
-    /// Lazy streaming-decoder over the content phase (post-thinking).
-    pub(super) content_decoder: Option<crate::tokenizer::StreamingDecoder<'static>>,
+    /// Lazy streaming-decoder over the model output. Created on the
+    /// first token with `skip_special_tokens=false` so that protocol
+    /// markers (`</think>`, ChatML specials if they appear) reach the
+    /// emit-layer state machine as literal text. Spans both the
+    /// Thinking and Content phases — the same `DecodeStream` instance
+    /// is fed every generated token in order, so HuggingFace's
+    /// prefix-stability invariant (`tokenizers-0.23.1/src/tokenizer/
+    /// mod.rs:1119-1126`) holds end-to-end.
+    pub(super) decoder: Option<crate::tokenizer::StreamingDecoder<'static>>,
+    /// Thinking-phase buffer: decoded text not yet emitted because it
+    /// might be the prefix of an `</end_tag>` substring straddling the
+    /// last decoder chunk. On each step we emit everything except the
+    /// last `end_tag.len() - 1` bytes (which could be the start of a
+    /// pending tag), and on substring-match we flush + transition.
+    pub(super) pending_pre_tag: String,
+    /// Set true once the first non-whitespace `content` byte has been
+    /// emitted (or once Content state was entered without prior
+    /// thinking). Until then, Content-state deltas are `trim_start`ed
+    /// so the `</think>\n\n` boundary doesn't produce a leading blank
+    /// line on the assistant bubble. Qwen3.5/3.6 emits `</think>` and
+    /// the following `\n\n` as separate tokens, so trimming at the
+    /// FSM transition isn't enough — we have to track across the
+    /// first few Content steps too.
+    pub(super) content_started: bool,
     /// Buffer used for stop-string matching across delta boundaries.
     pub(super) accumulated_content: String,
     /// Mirror of the post-sanitizer content stream; used by the
     /// post-stream refusal classifier and the `--dump` synthesiser.
     pub(super) refusal_scan_buf: String,
-    /// Flips true on first stop-string match or on watchdog/dedup
-    /// trip; suppresses further content emissions.
-    pub(super) stop_string_triggered: bool,
+    /// Major FSM phase. Mutated via `enter_thinking` / `enter_content`
+    /// / `mark_stopped`; queried via `is_thinking` / `is_stopped`.
+    /// Helper functions that historically took `&mut stop_string_
+    /// triggered: bool` (`bump_f12_tool_call_count`, `check_loop_
+    /// watchdog`, etc.) operate on a local bool seeded from
+    /// `is_stopped()`; the caller folds the post-call value back
+    /// into `phase` via `mark_stopped()`. Local-bool bridge keeps
+    /// the borrow checker happy on disjoint-field reborrows.
+    phase: StreamPhase,
     /// Sanitiser state: suppressing content while waiting for a
     /// matching `</parameter>` close after an orphan `<parameter=`.
     pub(super) suppressing_param_leak: bool,
@@ -84,20 +124,24 @@ pub(super) struct StreamState {
     pub(super) name_run: Option<(String, u32)>,
     /// Streaming tool-call detector (`Some` iff `tools_active`).
     pub(super) detector: Option<tool_parser::StreamingToolDetector>,
-    /// True iff the reasoning/`<think>` phase has finished. Starts
-    /// `true` when the request did not enable thinking.
-    pub(super) thinking_done: bool,
 }
 
 impl StreamState {
     pub(super) fn new(tools_active: bool, enable_thinking: bool) -> Self {
         Self {
-            all_toks: Vec::new(),
-            emitted: 0,
-            content_decoder: None,
+            decoder: None,
+            pending_pre_tag: String::new(),
+            // If thinking is disabled, the assistant turn opens
+            // directly in Content state — there's no `</think>\n\n`
+            // boundary to trim, so content_started begins `true`.
+            content_started: !enable_thinking,
             accumulated_content: String::new(),
             refusal_scan_buf: String::new(),
-            stop_string_triggered: false,
+            phase: if enable_thinking {
+                StreamPhase::Thinking
+            } else {
+                StreamPhase::Content
+            },
             suppressing_param_leak: false,
             inside_envelope: false,
             reasoning_inside_envelope: false,
@@ -119,7 +163,53 @@ impl StreamState {
             } else {
                 None
             },
-            thinking_done: !enable_thinking,
         }
+    }
+
+    pub(super) fn phase(&self) -> StreamPhase {
+        self.phase
+    }
+
+    pub(super) fn is_thinking(&self) -> bool {
+        matches!(self.phase, StreamPhase::Thinking)
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        matches!(self.phase, StreamPhase::Stopped)
+    }
+
+    /// Transition Thinking → Content. No-op from Content (idempotent
+    /// re-entry on the same chunk) and from Stopped (terminal).
+    pub(super) fn enter_content(&mut self) {
+        match self.phase {
+            StreamPhase::Thinking => {
+                self.phase = StreamPhase::Content;
+                if let Some(det) = self.detector.as_mut() {
+                    det.reset();
+                }
+            }
+            StreamPhase::Content | StreamPhase::Stopped => {}
+        }
+    }
+
+    /// Transition Content → Thinking, on a hallucinated `<think>`
+    /// re-open mid-content. Clears the pre-tag buffer and arms the
+    /// content-start trim for the next `</end_tag>` boundary.
+    pub(super) fn enter_thinking(&mut self) {
+        match self.phase {
+            StreamPhase::Content => {
+                self.phase = StreamPhase::Thinking;
+                self.pending_pre_tag.clear();
+                self.content_started = false;
+            }
+            StreamPhase::Thinking | StreamPhase::Stopped => {}
+        }
+    }
+
+    /// Move to the terminal Stopped phase. Subsequent emit-layer
+    /// guards short-circuit; the `handle_done` arm still runs to
+    /// emit the finish_reason and final usage block.
+    pub(super) fn mark_stopped(&mut self) {
+        self.phase = StreamPhase::Stopped;
     }
 }

@@ -34,6 +34,25 @@ pub trait ReasoningParser: Send + Sync {
         }
     }
 
+    /// Apply model-specific cleanups to a streamed reasoning-content
+    /// chunk before it's emitted as a `reasoning_content` SSE delta.
+    ///
+    /// Default: pass-through. Override for models with known leak
+    /// patterns inside the thinking block — e.g. Qwen3.5/3.6 emits
+    /// stray protocol-tag fragments (`<tool_call>`, `</parameter>`,
+    /// `<function=`), bare role literals (`user`/`assistant`/`tool`),
+    /// and `assistant\n` prefixes mid-think that have to be stripped
+    /// at the SSE layer.
+    ///
+    /// Called from the chat-stream emit state machine on each chunk
+    /// the streaming decoder hands back while in the Thinking state.
+    /// The chunk is the freshly-decoded text since the previous
+    /// emission, so the cleanups operate on a small bounded window
+    /// — pair-collapse and substring removal are fine.
+    fn cleanup_reasoning_leaks(&self, chunk: &str) -> String {
+        chunk.to_string()
+    }
+
     /// Extract reasoning content from completed generation text.
     ///
     /// Chat templates inject `<start_tag>` into the prompt as a
@@ -134,6 +153,92 @@ impl ReasoningParser for QwenReasoningParser {
     }
     fn end_tag(&self) -> &str {
         "</think>"
+    }
+
+    /// Qwen3.5/3.6 thinking-phase leak patterns observed in
+    /// production, all originating in the model itself (not in
+    /// detection layers below this one). Applied per chunk before
+    /// emission as a `reasoning_content` SSE delta.
+    ///
+    /// 1. Stray `<think>` re-opens — the model sometimes restarts
+    ///    a thinking block mid-stream; strip the literal.
+    /// 2. `assistant\n` / `assistant` prefix at the very start of
+    ///    a chunk — Qwen leaks the role label when transitioning
+    ///    between thinking and content. Strip only at prefix
+    ///    position so legitimate "assistant" words elsewhere are
+    ///    preserved.
+    /// 3. Embedded `<tool_call>...</tool_call>` blocks — the
+    ///    model hallucinates a tool call inside its thinking;
+    ///    splice them out so the reasoning text is clean.
+    /// 4. Truncate at `<function=` — Qwen3.5's alternate tool-
+    ///    call format leaking into thinking. The detector
+    ///    runs on the content phase only, so we hard-stop here
+    ///    to prevent the partial structure from polluting the
+    ///    reasoning text.
+    /// 5. Strip stray closing tags `</parameter>`, `</function>`,
+    ///    `</tool_call>` — BPE-token fragments the model emits
+    ///    AFTER the real tool call structure has already been
+    ///    parsed elsewhere.
+    /// 6. Collapse `userX...userX` / `assistantX...assistantX` /
+    ///    `toolX...toolX` repetition loops (post-tool-call
+    ///    hallucination); also strip line-bounded standalones
+    ///    (`\nuser\n` → `\n`).
+    ///
+    /// All transformations are idempotent and preserve
+    /// surrounding whitespace.
+    fn cleanup_reasoning_leaks(&self, chunk: &str) -> String {
+        let mut cleaned = chunk.to_string();
+
+        // 1. Strip stray <think> re-opens.
+        cleaned = cleaned.replace("<think>", "");
+
+        // 2. Strip leading "assistant\n" / "assistant" prefix.
+        if let Some(rest) = cleaned.strip_prefix("assistant\n") {
+            cleaned = rest.to_string();
+        } else if let Some(rest) = cleaned.strip_prefix("assistant") {
+            cleaned = rest.to_string();
+        }
+
+        // 3. Splice out <tool_call>...</tool_call> blocks. Unclosed
+        //    trailing `<tool_call>` truncates the chunk (the model
+        //    is about to emit a tool call that the content-phase
+        //    detector will handle properly post-`</think>`).
+        while let Some(start) = cleaned.find("<tool_call>") {
+            if let Some(end) = cleaned[start..].find("</tool_call>") {
+                cleaned = format!(
+                    "{}{}",
+                    &cleaned[..start],
+                    &cleaned[start + end + "</tool_call>".len()..]
+                );
+            } else {
+                cleaned = cleaned[..start].to_string();
+                break;
+            }
+        }
+
+        // 4. Hard-stop at <function= (alternate Qwen tool-call format).
+        if let Some(start) = cleaned.find("<function=") {
+            cleaned = cleaned[..start].to_string();
+        }
+
+        // 5. Strip stray close tags.
+        for tag in &["</parameter>", "</function>", "</tool_call>"] {
+            cleaned = cleaned.replace(tag, "");
+        }
+
+        // 6. Role-word repetition loop collapse + standalone strip.
+        for word in &["user", "assistant", "tool"] {
+            let pair = format!("{word}{word}");
+            while cleaned.contains(&pair) {
+                cleaned = cleaned.replace(&pair, "");
+            }
+            let nl_form = format!("\n{word}\n");
+            while cleaned.contains(&nl_form) {
+                cleaned = cleaned.replace(&nl_form, "\n");
+            }
+        }
+
+        cleaned
     }
 }
 
@@ -258,6 +363,112 @@ mod tests {
         let (reasoning, content) = parser.extract_thinking(text, true);
         assert!(reasoning.is_none());
         assert_eq!(content, text);
+    }
+
+    #[test]
+    fn default_cleanup_reasoning_leaks_passes_through() {
+        // Models without quirky thinking-phase leaks (Mistral, etc.)
+        // get the default no-op implementation.
+        let parser = MistralReasoningParser;
+        let chunk = " any text with <tool_call>foo</tool_call> and </parameter>";
+        assert_eq!(parser.cleanup_reasoning_leaks(chunk), chunk);
+    }
+
+    #[test]
+    fn qwen_cleanup_strips_stray_think_tag() {
+        let parser = QwenReasoningParser;
+        assert_eq!(
+            parser.cleanup_reasoning_leaks("normal text <think>re-opened"),
+            "normal text re-opened",
+        );
+    }
+
+    #[test]
+    fn qwen_cleanup_strips_leading_assistant_prefix() {
+        let parser = QwenReasoningParser;
+        assert_eq!(
+            parser.cleanup_reasoning_leaks("assistant\nactual reasoning"),
+            "actual reasoning",
+        );
+        assert_eq!(
+            parser.cleanup_reasoning_leaks("assistantactual reasoning"),
+            "actual reasoning",
+        );
+        // But not mid-chunk.
+        assert_eq!(
+            parser.cleanup_reasoning_leaks("I told the assistant to think"),
+            "I told the assistant to think",
+        );
+    }
+
+    #[test]
+    fn qwen_cleanup_splices_out_inline_tool_call_blocks() {
+        let parser = QwenReasoningParser;
+        assert_eq!(
+            parser.cleanup_reasoning_leaks(
+                "thinking <tool_call>{\"name\":\"bash\"}</tool_call> more thinking"
+            ),
+            "thinking  more thinking",
+        );
+    }
+
+    #[test]
+    fn qwen_cleanup_truncates_at_unclosed_tool_call() {
+        let parser = QwenReasoningParser;
+        assert_eq!(
+            parser.cleanup_reasoning_leaks("thinking <tool_call>{\"name\":\"bash\""),
+            "thinking ",
+        );
+    }
+
+    #[test]
+    fn qwen_cleanup_truncates_at_function_equals() {
+        let parser = QwenReasoningParser;
+        assert_eq!(
+            parser.cleanup_reasoning_leaks("thinking <function=bash>"),
+            "thinking ",
+        );
+    }
+
+    #[test]
+    fn qwen_cleanup_strips_stray_close_tags() {
+        let parser = QwenReasoningParser;
+        assert_eq!(
+            parser.cleanup_reasoning_leaks(
+                "after a tool call </parameter></function></tool_call> back to thinking"
+            ),
+            "after a tool call  back to thinking",
+        );
+    }
+
+    #[test]
+    fn qwen_cleanup_collapses_role_word_repetition_loops() {
+        let parser = QwenReasoningParser;
+        // Pair collapse: useruser → empty (idempotent until no pairs left).
+        assert_eq!(parser.cleanup_reasoning_leaks("useruser"), "");
+        assert_eq!(parser.cleanup_reasoning_leaks("useruseruseruser"), "");
+        // Adjacent text outside the pair survives.
+        assert_eq!(
+            parser.cleanup_reasoning_leaks("hello useruser world"),
+            "hello  world",
+        );
+        // Standalone line-bounded form collapses to just the newline.
+        assert_eq!(
+            parser.cleanup_reasoning_leaks("line1\nuser\nline2"),
+            "line1\nline2",
+        );
+    }
+
+    #[test]
+    fn qwen_cleanup_preserves_legitimate_leading_whitespace() {
+        // The point of the rewrite: the BPE decoder gives us
+        // leading-space tokens (` voice`, ` computer`) intact, and
+        // none of the cleanups eat them.
+        let parser = QwenReasoningParser;
+        assert_eq!(
+            parser.cleanup_reasoning_leaks(" voice computer in the system"),
+            " voice computer in the system",
+        );
     }
 
     #[test]
