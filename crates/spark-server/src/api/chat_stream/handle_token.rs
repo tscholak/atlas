@@ -13,7 +13,7 @@ use axum::response::sse::Event;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::super::failures::{bump_f12_tool_call_count, check_loop_watchdog};
+use super::super::failures::{bump_f12_tool_call_count, check_loop_watchdog, flush_content_sanitizer};
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::{StreamPhase, StreamState};
@@ -256,6 +256,23 @@ fn thinking_step(
         state.pending_pre_tag.clear();
         if ctx.enable_thinking {
             emit_thinking(sse_events, state, ctx, &pre);
+            // Flush the reasoning sanitizer's tail-hold buffer at the
+            // Thinking→Content boundary. `emit_thinking` routes through
+            // `sanitize_content_chunk`, which retains up to `tag_max-1`
+            // trailing bytes pending leak-marker fuse on the next chunk
+            // — but there is no next thinking chunk, so without this
+            // flush every thinking block silently loses its tail.
+            let tail = flush_content_sanitizer(
+                &mut state.reasoning_tag_scan_buf,
+                &mut state.reasoning_suppressing_leak,
+                &ctx.leak_markers,
+            );
+            state.reasoning_inside_envelope = false;
+            if !tail.is_empty() {
+                let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, tail);
+                let json = serde_json::to_string(&chunk).unwrap_or_default();
+                sse_events.push(Ok(Event::default().data(json)));
+            }
         }
         state.enter_content();
         if after.is_empty() { None } else { Some(after) }

@@ -471,4 +471,59 @@ mod tests {
         let out = primary_arg_for_tool("Write", r#"{"content":"fn main(){}"}"#);
         assert_eq!(out, None);
     }
+
+    /// Round-trip invariant: the sanitizer holds back up to
+    /// `tag_max - 1` trailing bytes pending the possibility that
+    /// they're the prefix of a leak marker straddling the next chunk.
+    /// For benign text whose tail does NOT match any marker prefix,
+    /// every byte must be recoverable via a final
+    /// `flush_content_sanitizer` once no further chunks will arrive.
+    ///
+    /// Regression for the thinking-block truncation bug: chat-stream
+    /// `emit_thinking` (handle_token.rs) routed all reasoning text
+    /// through `sanitize_content_chunk` with `reasoning_tag_scan_buf`
+    /// as scratch, but no code path ever flushed that buffer at the
+    /// Thinking→Content transition or at end-of-stream. Every
+    /// thinking block silently lost its trailing `tag_max - 1` bytes.
+    /// The fix wires `flush_content_sanitizer` into both boundaries;
+    /// this test pins the helper-level invariant the FSM now relies
+    /// on so a future refactor that drops the flush will fail here.
+    #[test]
+    fn sanitize_plus_flush_round_trips_benign_text() {
+        use super::super::failures::flush_content_sanitizer;
+        use crate::tool_parser::{Qwen3CoderParser, ToolCallParser};
+
+        let markers = Qwen3CoderParser.leak_markers();
+        // Qwen3-coder's longest leak marker is `<function_results>`
+        // (18 bytes), so the sanitizer holds back up to 17 trailing
+        // bytes. The tail of `input` contains no `<` so the
+        // looks-like-partial-tag guard in `flush_content_sanitizer`
+        // doesn't drop the buffered bytes.
+        let input = "Let me think. I'll use a brief acknowledgement \
+                     and ask for the user's request.";
+        let mut buf = String::new();
+        let mut suppress = false;
+        let mut inside_env = false;
+        let emitted = super::sanitize_content_chunk(
+            input,
+            &mut buf,
+            &mut suppress,
+            &mut inside_env,
+            &markers,
+        );
+        assert!(
+            emitted.len() < input.len(),
+            "sanitizer must hold back the tail pending tag-fuse \
+             (emitted={emitted:?}, input_len={})",
+            input.len()
+        );
+        let tail = flush_content_sanitizer(&mut buf, &mut suppress, &markers);
+        assert!(!tail.is_empty(), "flush must surface the held tail");
+        assert_eq!(
+            format!("{emitted}{tail}"),
+            input,
+            "sanitize + flush must round-trip benign text byte-for-byte",
+        );
+        assert!(buf.is_empty(), "flush must drain the scan buffer");
+    }
 }
