@@ -114,6 +114,7 @@ pub(super) fn handle_done(
         }),
         time_to_first_token_ms,
         response_tokens_per_second: tps,
+        request_id: ctx.request_id.as_str().to_string(),
     };
 
     // ── Last-resort tool salvage ────────────────────────────────────

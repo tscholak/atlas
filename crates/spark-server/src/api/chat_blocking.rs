@@ -457,6 +457,7 @@ fn finalize_response(
         }),
         time_to_first_token_ms: first_ttft,
         response_tokens_per_second: tokens_per_second,
+        request_id: request_id.as_str().to_string(),
     };
 
     let completion_id = format!("chatcmpl-{}", crate::openai::uuid_v4());

@@ -65,7 +65,21 @@ pub async fn responses_endpoint(
     request_id: axum::extract::Extension<crate::request_id::RequestId>,
     req: Result<Json<crate::openai::ResponsesRequest>, JsonRejection>,
 ) -> Response {
+    use tracing::Instrument;
     let request_id = request_id.0;
+    let span = tracing::info_span!(
+        "atlas::request",
+        endpoint = "/v1/responses",
+        request_id = %request_id.as_str(),
+    );
+    responses_endpoint_impl(state, request_id, req).instrument(span).await
+}
+
+async fn responses_endpoint_impl(
+    state: State<Arc<AppState>>,
+    request_id: crate::request_id::RequestId,
+    req: Result<Json<crate::openai::ResponsesRequest>, JsonRejection>,
+) -> Response {
     let Json(r) = match req {
         Ok(r) => r,
         Err(e) => {
@@ -167,8 +181,12 @@ pub async fn responses_endpoint(
 
     // Re-enter the blocking chat-completions handler with the lowered
     // request. Use the _inner variant because we already have a parsed
-    // struct (no raw bytes available to dump at this layer; the Responses
-    // handler dumps at its own entry point if --dump is enabled).
+    // struct (no raw bytes available to dump at this layer). The dump
+    // does fire downstream — chat_completions_inner emits the standard
+    // atlas::dump request event with the LOWERED chat-form body, tagged
+    // with the same request_id we received here, so operators tracing
+    // a /v1/responses request via REQUEST_ID see the canonical chat
+    // shape rather than the Responses-API shape.
     let resp = chat_completions_inner(
         state.0.clone(),
         None,

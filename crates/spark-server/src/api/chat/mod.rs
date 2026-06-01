@@ -45,44 +45,61 @@ pub async fn chat_completions(
     request_id: axum::extract::Extension<crate::request_id::RequestId>,
     body: axum::body::Bytes,
 ) -> Response {
+    use tracing::Instrument;
     let request_id = request_id.0;
-    // Parse the body ourselves (instead of using axum's `Json`
-    // extractor) so the same bytes can feed both the deserialized
-    // handler path and the `--dump` raw-capture path without
-    // cloning the struct or cascading `Serialize` through every
-    // request type.
-    let req: ChatCompletionRequest = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => {
-            return openai_error_response(
-                StatusCode::BAD_REQUEST,
-                format!("Invalid request JSON: {e}"),
-            );
-        }
-    };
-
-    // --dump: emit an `atlas::dump` tracing event for the incoming
-    // request body. Outer event_enabled gate skips the verbatim-body
-    // re-parse when dumping is disabled by the active filter.
-    let dump_seq = if tracing::event_enabled!(target: "atlas::dump", tracing::Level::INFO) {
-        match serde_json::from_slice::<serde_json::Value>(&body) {
-            Ok(v) => {
-                let seq = crate::request_dumper::next_seq();
-                crate::request_dumper::dump_request(
-                    "/v1/chat/completions",
-                    seq,
-                    request_id.as_str(),
-                    &v,
+    // Wrap the body in a request-scoped span so every nested
+    // `tracing::warn!()` / `info!()` / `error!()` fired during the
+    // handler's call tree (validator, sanitizer, parser, retry path)
+    // inherits `request_id` without each emit site having to thread it
+    // explicitly. The scheduler runs in a separate task and does NOT
+    // inherit this span — its per-tick events thread `request_id`
+    // explicitly via `ActiveSeq.request_id`.
+    let span = tracing::info_span!(
+        "atlas::request",
+        endpoint = "/v1/chat/completions",
+        request_id = %request_id.as_str(),
+    );
+    async move {
+        // Parse the body ourselves (instead of using axum's `Json`
+        // extractor) so the same bytes can feed both the deserialized
+        // handler path and the `--dump` raw-capture path without
+        // cloning the struct or cascading `Serialize` through every
+        // request type.
+        let req: ChatCompletionRequest = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("Invalid request JSON: {e}"),
                 );
-                Some(seq)
             }
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
+        };
 
-    chat_completions_inner(state, req_ctx, req, dump_seq, request_id).await
+        // --dump: emit an `atlas::dump` tracing event for the incoming
+        // request body. Outer event_enabled gate skips the verbatim-body
+        // re-parse when dumping is disabled by the active filter.
+        let dump_seq = if tracing::event_enabled!(target: "atlas::dump", tracing::Level::INFO) {
+            match serde_json::from_slice::<serde_json::Value>(&body) {
+                Ok(v) => {
+                    let seq = crate::request_dumper::next_seq();
+                    crate::request_dumper::dump_request(
+                        "/v1/chat/completions",
+                        seq,
+                        request_id.as_str(),
+                        &v,
+                    );
+                    Some(seq)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        chat_completions_inner(state, req_ctx, req, dump_seq, request_id).await
+    }
+    .instrument(span)
+    .await
 }
 
 /// Internal entry for the parsed-request path. Called by

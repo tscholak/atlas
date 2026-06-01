@@ -55,6 +55,14 @@ pub struct Usage {
     /// Decode throughput in tokens per second.
     #[serde(rename = "response_token/s")]
     pub response_tokens_per_second: f64,
+    /// UUIDv7 echo of the request that produced this response. Clients
+    /// that prefer reading from the response body rather than from the
+    /// `x-request-id` HTTP header (curl-from-the-shell debugging, for
+    /// instance) get the cross-store-correlation key here. Empty when
+    /// the request was issued before per-request id propagation was
+    /// wired through.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub request_id: String,
 }
 
 /// Prompt-token breakdown (OpenAI-compatible `prompt_tokens_details`).

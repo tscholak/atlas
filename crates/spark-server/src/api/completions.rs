@@ -58,7 +58,21 @@ pub async fn completions(
     request_id: axum::extract::Extension<crate::request_id::RequestId>,
     req: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Response {
+    use tracing::Instrument;
     let request_id = request_id.0;
+    let span = tracing::info_span!(
+        "atlas::request",
+        endpoint = "/v1/completions",
+        request_id = %request_id.as_str(),
+    );
+    completions_impl(state, request_id, req).instrument(span).await
+}
+
+async fn completions_impl(
+    state: Arc<AppState>,
+    request_id: crate::request_id::RequestId,
+    req: Result<Json<CompletionRequest>, JsonRejection>,
+) -> Response {
     let Json(req) = match req {
         Ok(r) => r,
         Err(e) => {
@@ -245,6 +259,7 @@ pub async fn completions(
         }),
         time_to_first_token_ms: response.time_to_first_token_ms,
         response_tokens_per_second: tokens_per_second,
+        request_id: request_id.as_str().to_string(),
     };
 
     Json(CompletionResponse::new(
@@ -325,6 +340,7 @@ pub(super) async fn completions_stream(
 
     let model = model_name.clone();
     let id = chunk_id.clone();
+    let usage_request_id = request_id.as_str().to_string();
     let mut all_toks: Vec<u32> = Vec::new();
     let mut emitted: usize = 0;
     let token_stream = ReceiverStream::new(token_rx).map(move |event| match event {
@@ -375,6 +391,7 @@ pub(super) async fn completions_stream(
                 }),
                 time_to_first_token_ms,
                 response_tokens_per_second: tps,
+                request_id: usage_request_id.clone(),
             };
             let chunk = CompletionChunk::done_chunk(&model, &id, &finish_reason, usage);
             let json = serde_json::to_string(&chunk).unwrap_or_default();

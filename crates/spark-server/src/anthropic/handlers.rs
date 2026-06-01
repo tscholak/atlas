@@ -31,7 +31,21 @@ pub async fn messages(
     request_id: axum::extract::Extension<crate::request_id::RequestId>,
     body: axum::body::Bytes,
 ) -> Response {
+    use tracing::Instrument;
     let request_id = request_id.0;
+    let span = tracing::info_span!(
+        "atlas::request",
+        endpoint = "/v1/messages",
+        request_id = %request_id.as_str(),
+    );
+    messages_impl(state, request_id, body).instrument(span).await
+}
+
+async fn messages_impl(
+    state: Arc<AppState>,
+    request_id: crate::request_id::RequestId,
+    body: axum::body::Bytes,
+) -> Response {
     // 1. Parse the Anthropic request.
     let req: MessagesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
