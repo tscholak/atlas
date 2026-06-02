@@ -52,7 +52,6 @@ pub fn start_chunked_prefill(
         tracing::info!("Thinking enabled, budget={:?}", req_thinking_budget);
     }
     let req_require_tool_call = req.require_tool_call();
-    let req_suppress_tool_call = req.suppress_tool_call();
     let req_disable_mtp = req.disable_mtp();
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
@@ -258,7 +257,6 @@ pub fn start_chunked_prefill(
                 tool_call_start_token,
                 tool_call_opened: false,
                 inside_tool_body: false,
-                suppress_tool_call: req_suppress_tool_call,
                 disable_mtp: req_disable_mtp,
                 content_started: false,
                 content_tokens: 0,
@@ -341,7 +339,6 @@ pub fn start_chunked_prefill(
                 tool_call_start_token,
                 tool_call_opened: false,
                 inside_tool_body: false,
-                suppress_tool_call: req_suppress_tool_call,
                 disable_mtp: req_disable_mtp,
                 content_started: false,
                 content_tokens: 0,
@@ -397,7 +394,6 @@ pub fn start_chunked_prefill(
             thinking_budget: req_thinking_budget,
             spontaneous_think_budget,
             require_tool_call: req_require_tool_call,
-            suppress_tool_call: req_suppress_tool_call,
             disable_mtp: req_disable_mtp,
             grammar_state,
             seed: req_seed,

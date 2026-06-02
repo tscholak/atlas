@@ -46,8 +46,6 @@ pub(super) fn build_sampling(
     req: &ChatCompletionRequest,
     enable_thinking: bool,
     tools_active: bool,
-    suppress_tool_call: bool,
-    tool_call_repeat_count: usize,
 ) -> Result<SamplingSetup, Response> {
     // Preset selection.
     let preset = if tools_active {
@@ -85,27 +83,11 @@ pub(super) fn build_sampling(
     }
 
     // Logit bias from OpenAI (string keys) → Vec<(u32, f32)>.
-    let mut logit_bias: Vec<(u32, f32)> = req.logit_bias.as_ref().map_or(Vec::new(), |map| {
+    let logit_bias: Vec<(u32, f32)> = req.logit_bias.as_ref().map_or(Vec::new(), |map| {
         map.iter()
             .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
             .collect()
     });
-
-    // Exponential `<tool_call>` bias decay.
-    if tools_active
-        && !suppress_tool_call
-        && let Some(tc_id) = state.tool_call_start_token_id
-    {
-        let bias = match tool_call_repeat_count {
-            0 | 1 => 3.0,
-            2 => 0.0,
-            3 => -5.0,
-            _ => -10.0,
-        };
-        if bias != 0.0 {
-            logit_bias.push((tc_id, bias));
-        }
-    }
 
     // max_tokens cap when tools are active.
     let max_tokens = if tools_active {

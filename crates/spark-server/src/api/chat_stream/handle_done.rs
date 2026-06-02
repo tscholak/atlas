@@ -8,7 +8,7 @@ use axum::response::sse::Event;
 use crate::openai::{ChatCompletionChunk, Usage};
 use crate::tool_parser;
 
-use super::super::failures::{bump_f12_tool_call_count, flush_content_sanitizer};
+use super::super::failures::flush_content_sanitizer;
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::StreamState;
@@ -127,9 +127,6 @@ pub(super) fn handle_done(
         &ctx.leak_markers,
     );
     if !tail.is_empty() {
-        if state.refusal_scan_buf.len() < 16_384 {
-            state.refusal_scan_buf.push_str(&tail);
-        }
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail);
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
@@ -161,63 +158,11 @@ pub(super) fn handle_done(
         request_id: ctx.request_id.as_str().to_string(),
     };
 
-    // ── Last-resort tool salvage ────────────────────────────────────
-    if !state.salvaged_tool_call && !state.detector.as_ref().is_some_and(|d| d.has_tool_calls()) {
-        let salvaged =
-            crate::tool_salvage::salvage(&state.refusal_scan_buf, &ctx.tool_defs_for_backfill);
-        for (idx, tc) in salvaged.iter().enumerate() {
-            tracing::warn!(
-                tool = %tc.function.name,
-                block_index = idx,
-                "tool_salvage: emitting synthetic tool_call from prose",
-            );
-            let mut stop_local = state.is_stopped();
-            bump_f12_tool_call_count(
-                &mut state.tool_calls_emitted_count,
-                ctx.max_tool_calls_per_response,
-                &mut stop_local,
-            );
-            if stop_local {
-                state.mark_stopped();
-            }
-            let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
-            sse_events.push(Ok(
-                Event::default().data(serde_json::to_string(&start).unwrap_or_default())
-            ));
-            let frag = ChatCompletionChunk::tool_call_args_fragment(
-                &ctx.model,
-                &ctx.id,
-                idx,
-                &tc.function.arguments,
-            );
-            sse_events.push(Ok(
-                Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
-            ));
-        }
-        if !salvaged.is_empty() {
-            state.salvaged_tool_call = true;
-        }
-    }
-
-    let fr = if state.detector.as_ref().is_some_and(|d| d.has_tool_calls())
-        || state.salvaged_tool_call
-    {
+    let fr = if state.detector.as_ref().is_some_and(|d| d.has_tool_calls()) {
         "tool_calls"
     } else {
         finish_reason.as_str()
     };
-
-    // Refusal classification.
-    let refusal_signal = if state.detector.as_ref().is_none_or(|d| !d.has_tool_calls()) {
-        crate::refusal::detect(&state.refusal_scan_buf)
-    } else {
-        None
-    };
-    if let Some(ref r) = refusal_signal {
-        let chunk = ChatCompletionChunk::refusal_chunk(&ctx.model, &ctx.id, r.clone());
-        let json = serde_json::to_string(&chunk).unwrap_or_default();
-        sse_events.push(Ok(Event::default().data(json)));
-    }
 
     // Usage emission strategy.
     let emit_separate_usage = ctx.req_stream_include_usage;
@@ -262,7 +207,6 @@ pub(super) fn handle_done(
             "model": ctx.model,
             "object": "chat.completion.synthesized",
             "finish_reason": fr,
-            "content": state.refusal_scan_buf,
             "has_tool_calls": has_tool_calls,
             "usage": usage_for_dump,
             "stop_string_triggered": state.is_stopped(),

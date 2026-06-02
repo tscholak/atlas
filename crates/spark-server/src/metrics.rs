@@ -25,31 +25,11 @@ lazy_static! {
         register_int_counter!("atlas_prompt_tokens_total", "Total prompt tokens processed")
             .unwrap();
 
-    // ── Loop-detector telemetry (P5.2, 2026-04-25) ──
-    //
-    // Track the verdict distribution emitted by `loop_detector::detect`
-    // so we can tune thresholds against production traffic instead of
-    // single dump fixtures. Labels:
-    //   - verdict ∈ {none, hint, suppress}
-    //   - channel ∈ {text, tools, combined, n/a (None verdict)}
-    //   - spinning ∈ {0, 1} — was Layer-2 spinning detection also active
-    pub static ref LOOP_DETECTOR_VERDICTS: IntCounterVec =
-        register_int_counter_vec!(
-            "atlas_loop_detector_verdicts_total",
-            "Loop detector verdicts emitted, by verdict + channel + spinning flag",
-            &["verdict", "channel", "spinning"]
-        ).unwrap();
-
     // ── Server-side intervention telemetry (P5.2) ──
     //
-    // Track how often the goal-pin reminder + observation-masking
-    // fire, so we can correlate intervention frequency with outcome
-    // metrics (TTFT, completion length, finish_reason).
-    pub static ref TASK_PIN_INJECTIONS: IntCounter =
-        register_int_counter!(
-            "atlas_task_pin_injections_total",
-            "Times the verbatim-goal reminder was injected into a request"
-        ).unwrap();
+    // Track how often observation-masking fires, so we can correlate
+    // intervention frequency with outcome metrics (TTFT, completion
+    // length, finish_reason).
     pub static ref OBSERVATION_MASK_ELIDED_BODIES: IntCounter =
         register_int_counter!(
             "atlas_observation_mask_elided_bodies_total",

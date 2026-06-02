@@ -50,7 +50,6 @@ pub fn prefill_request(
         tracing::info!("Thinking enabled, budget={:?}", req_thinking_budget);
     }
     let req_require_tool_call = req.require_tool_call();
-    let req_suppress_tool_call = req.suppress_tool_call();
     let req_disable_mtp = req.disable_mtp();
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
@@ -212,7 +211,6 @@ pub fn prefill_request(
             think_just_ended: false,
             think_skip_count: 0,
             require_tool_call: use_legacy_tool_call,
-            suppress_tool_call: req_suppress_tool_call,
             disable_mtp: req_disable_mtp,
             content_started: false,
             content_tokens: 0,
@@ -291,7 +289,6 @@ pub fn prefill_request(
         think_just_ended: false,
         think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
-        suppress_tool_call: req_suppress_tool_call,
         disable_mtp: req_disable_mtp,
         content_started: false,
         content_tokens: 0,

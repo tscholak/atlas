@@ -68,7 +68,6 @@ pub(super) struct PrefillInProgress {
     /// hard-coded 512-token fallback.
     pub spontaneous_think_budget: u32,
     pub require_tool_call: bool,
-    pub suppress_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag (propagated to ActiveSeq).
     pub disable_mtp: bool,
     pub grammar_state: Option<GrammarState>,
@@ -158,8 +157,6 @@ pub(super) struct ActiveSeq {
     /// True between emission of `<tool_call>`/`<function=…>` (open) and
     /// `</tool_call>`/`</function>` (close).
     pub inside_tool_body: bool,
-    /// When true, `<tool_call>` token logit is set to -inf during decode.
-    pub suppress_tool_call: bool,
     /// F60 (2026-04-27): when true, MTP speculative decoding is bypassed.
     pub disable_mtp: bool,
     /// True after the first non-thinking content token has been generated.
@@ -249,7 +246,6 @@ pub(super) struct SwappedSeq {
     pub think_just_ended: bool,
     pub think_skip_count: u32,
     pub require_tool_call: bool,
-    pub suppress_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag preserved across snapshot/restore.
     pub disable_mtp: bool,
     pub content_started: bool,

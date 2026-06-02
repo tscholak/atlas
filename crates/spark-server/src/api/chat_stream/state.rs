@@ -67,9 +67,6 @@ pub(super) struct StreamState {
     pub(super) content_started: bool,
     /// Buffer used for stop-string matching across delta boundaries.
     pub(super) accumulated_content: String,
-    /// Mirror of the post-sanitizer content stream; used by the
-    /// post-stream refusal classifier and the `--dump` synthesiser.
-    pub(super) refusal_scan_buf: String,
     /// Major FSM phase. Mutated via `enter_thinking` / `enter_content`
     /// / `mark_stopped`; queried via `is_thinking` / `is_stopped`.
     /// Helper functions that historically took `&mut stop_string_
@@ -100,10 +97,6 @@ pub(super) struct StreamState {
     pub(super) loop_scan_buf: String,
     /// Set true when the watchdog or SimHash guard fires.
     pub(super) loop_watchdog_triggered: bool,
-    /// Set true when the watchdog salvages a fenced/XML tool intent
-    /// into a synthetic `tool_call` so the Done arm picks the right
-    /// `finish_reason`.
-    pub(super) salvaged_tool_call: bool,
     /// F4: SimHash semantic-loop guard for paraphrased restarts.
     pub(super) simhash_guard: crate::loop_simhash::SimHashLoopGuard,
     /// F4: pending bytes accumulated until a sentence-boundary or
@@ -144,7 +137,6 @@ impl StreamState {
             // boundary to trim, so content_started begins `true`.
             content_started: !enable_thinking,
             accumulated_content: String::new(),
-            refusal_scan_buf: String::new(),
             phase: if enable_thinking {
                 StreamPhase::Thinking
             } else {
@@ -158,7 +150,6 @@ impl StreamState {
             reasoning_tag_scan_buf: String::new(),
             loop_scan_buf: String::new(),
             loop_watchdog_triggered: false,
-            salvaged_tool_call: false,
             simhash_guard: crate::loop_simhash::SimHashLoopGuard::new(),
             simhash_pending: String::new(),
             tool_arg_dedup: crate::tool_arg_dedup::ToolArgDedup::new(),

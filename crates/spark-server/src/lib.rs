@@ -20,5 +20,3 @@ pub mod tokenizer;
 pub mod auth;
 #[path = "rate_limiter.rs"]
 pub mod rate_limiter;
-#[path = "refusal.rs"]
-pub mod refusal;

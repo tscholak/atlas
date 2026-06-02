@@ -53,7 +53,6 @@ pub(super) struct BlockingPathArgs {
     pub thinking_budget: Option<u32>,
     pub tools_active: bool,
     pub tool_choice_required: bool,
-    pub suppress_tool_call: bool,
     pub grammar_spec: Option<GrammarSpec>,
     pub top_logprobs: Option<u8>,
     pub timeout_at: Option<std::time::Instant>,
@@ -90,7 +89,6 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         thinking_budget,
         tools_active,
         tool_choice_required,
-        suppress_tool_call,
         grammar_spec,
         top_logprobs,
         timeout_at,
@@ -142,7 +140,6 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             enable_thinking,
             thinking_budget,
             require_tool_call: tool_choice_required,
-            suppress_tool_call,
             disable_mtp: f60_disable_mtp_for_request(tools_active),
             grammar_spec: grammar_spec.clone(),
             seed: req.seed.map(|s| s.wrapping_add(choice_idx as u64)),
@@ -367,18 +364,6 @@ fn build_choice_message(
                 finish_reason_i = "tool_calls".to_string();
             }
         }
-    }
-
-    // Refusal classifier: when the model's assistant text opens with
-    // a known refusal pattern AND no tool call fired, populate
-    // `message.refusal` and null out `content` per the OpenAI spec.
-    if message.tool_calls.is_none()
-        && let Some(content_text) = message.content.as_deref()
-        && let Some(refusal_sentence) = crate::refusal::detect(content_text)
-    {
-        message.refusal = Some(refusal_sentence);
-        message.content = None;
-        message.annotations = None;
     }
 
     (message, finish_reason_i)

@@ -115,19 +115,12 @@ pub fn process_seq_logits(
     // "actually run the tests"). For thinking, hard-mask remains: tool
     // calls inside <think> are unparsable per the (canonical) qwen3_coder
     // dialect, so they must be physically blocked.
-    if a.inside_thinking {
-        if let Some(tc_start) = tool_call_start_token {
-            let idx = tc_start as usize;
-            if idx < f32_logits.len() {
-                f32_logits[idx] = f32::NEG_INFINITY;
-            }
-        }
-    } else if a.suppress_tool_call
+    if a.inside_thinking
         && let Some(tc_start) = tool_call_start_token
     {
         let idx = tc_start as usize;
         if idx < f32_logits.len() {
-            f32_logits[idx] -= 12.0;
+            f32_logits[idx] = f32::NEG_INFINITY;
         }
     }
 

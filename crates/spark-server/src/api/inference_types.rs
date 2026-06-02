@@ -102,8 +102,6 @@ pub enum InferenceRequest {
         thinking_budget: Option<u32>,
         /// Whether a tool call is required (tool_choice="required").
         require_tool_call: bool,
-        /// Suppress `<tool_call>` token when tool call loop detected (≥3 identical).
-        suppress_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
         /// sequence. Set when the request has tools active and the
         /// `ATLAS_DISABLE_MTP_FOR_TOOLS` env-gate is on (default true).
@@ -170,8 +168,6 @@ pub enum InferenceRequest {
         thinking_budget: Option<u32>,
         /// Whether a tool call is required (tool_choice="required").
         require_tool_call: bool,
-        /// Suppress `<tool_call>` token when tool call loop detected (≥3 identical).
-        suppress_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
         /// sequence. Set when the request has tools active and the
         /// `ATLAS_DISABLE_MTP_FOR_TOOLS` env-gate is on (default true).

@@ -12,8 +12,6 @@
 //! - `msg_entry`      — `MsgEntry` + `build_msg_entries` (req →
 //!                      tokenisable shape, image preprocessing,
 //!                      cwd extraction)
-//! - `loop_detect`    — generic loop / spinning detection +
-//!                      task-pin re-anchor
 //! - `thinking`       — `(enable_thinking, thinking_budget)`
 //!                      resolution
 //! - `template`       — JSON-message build, auto-compact,
@@ -22,7 +20,6 @@
 //! - `sampling_setup` — preset / penalty / stop-token / grammar /
 //!                      timeout / logprobs resolution
 
-mod loop_detect;
 mod msg_entry;
 pub(super) mod repair_json;
 mod sampling_setup;
@@ -169,7 +166,6 @@ pub(crate) async fn chat_completions_inner(
         cwd_hint,
         image_pixels,
         image_pad_counts,
-        consecutive_tool_errors,
     } = match msg_entry::build_msg_entries(&state, &req, tools_active) {
         Ok(o) => o,
         Err(resp) => return resp,
@@ -200,12 +196,6 @@ pub(crate) async fn chat_completions_inner(
             crate::metrics::OBSERVATION_MASK_ELIDED_BODIES.inc_by(masked_count as u64);
         }
     }
-
-    // ── Phase 4: generic loop / spinning detection + task pin ───
-    let loop_detect::LoopDetectOut {
-        suppress_tool_call,
-        tool_call_repeat_count,
-    } = loop_detect::check_loops(&req, &mut messages, consecutive_tool_errors, tools_active);
 
     // ── Phase 5: render Jinja template + image-pad expansion ────
     let template::TemplateOut {
@@ -268,8 +258,6 @@ pub(crate) async fn chat_completions_inner(
         &req,
         enable_thinking,
         tools_active,
-        suppress_tool_call,
-        tool_call_repeat_count,
     ) {
         Ok(s) => s,
         Err(resp) => return resp,
@@ -304,7 +292,6 @@ pub(crate) async fn chat_completions_inner(
             thinking_budget,
             tools_active,
             tool_choice_required,
-            suppress_tool_call,
             cwd_hint.clone(),
             stop_tokens,
             grammar_spec.clone(),
@@ -342,7 +329,6 @@ pub(crate) async fn chat_completions_inner(
         thinking_budget,
         tools_active,
         tool_choice_required,
-        suppress_tool_call,
         grammar_spec,
         top_logprobs,
         timeout_at,

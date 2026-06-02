@@ -13,7 +13,7 @@ use axum::response::sse::Event;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::super::failures::{bump_f12_tool_call_count, check_loop_watchdog, flush_content_sanitizer};
+use super::super::failures::{check_loop_watchdog, flush_content_sanitizer};
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::{StreamPhase, StreamState};
@@ -391,54 +391,10 @@ fn process_detector_content(
         }
         state.loop_watchdog_triggered = true;
         state.mark_stopped();
-
-        let salvaged =
-            crate::tool_salvage::salvage(&state.loop_scan_buf, &ctx.tool_defs_for_backfill);
-        let mut events: SseVec = Vec::new();
-        for (idx, tc) in salvaged.iter().enumerate() {
-            tracing::warn!(
-                tool = %tc.function.name,
-                block_index = idx,
-                "watchdog salvage: emitting synthetic tool_call",
-            );
-            // Local-bool bridge: the helper takes `&mut bool`; passing
-            // a method-derived borrow alongside another `&mut state.X`
-            // field would conflict at the borrow checker, so we bounce
-            // through a local and fold back into the FSM if the helper
-            // tripped the cap.
-            let mut stop_local = state.is_stopped();
-            bump_f12_tool_call_count(
-                &mut state.tool_calls_emitted_count,
-                ctx.max_tool_calls_per_response,
-                &mut stop_local,
-            );
-            if stop_local {
-                state.mark_stopped();
-            }
-            let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, idx);
-            events.push(Ok(
-                Event::default().data(serde_json::to_string(&start).unwrap_or_default())
-            ));
-            let frag = ChatCompletionChunk::tool_call_args_fragment(
-                &ctx.model,
-                &ctx.id,
-                idx,
-                &tc.function.arguments,
-            );
-            events.push(Ok(
-                Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
-            ));
-        }
-        if !salvaged.is_empty() {
-            state.salvaged_tool_call = true;
-        }
-        return Some(events);
+        return Some(Vec::new());
     }
 
     if !sanitized.is_empty() {
-        if state.refusal_scan_buf.len() < 16_384 {
-            state.refusal_scan_buf.push_str(sanitized);
-        }
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized.to_string());
         let json = serde_json::to_string(&chunk).unwrap_or_default();
         let events: SseVec = vec![Ok(Event::default().data(json))];

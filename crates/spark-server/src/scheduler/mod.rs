@@ -320,7 +320,7 @@ pub fn run(
                 && active.len() <= MAX_MTP_BATCH
                 && active
                     .iter()
-                    .all(|a| !a.inside_thinking && !a.suppress_tool_call && !a.disable_mtp)
+                    .all(|a| !a.inside_thinking && !a.disable_mtp)
             {
                 // MTP speculative decode: beneficial at all context lengths.
                 // Phase I (2026-05-30): gate widened from `active.len() == 1`
