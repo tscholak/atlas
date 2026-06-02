@@ -42,12 +42,20 @@ pub(super) struct StreamState {
     /// prefix-stability invariant (`tokenizers-0.23.1/src/tokenizer/
     /// mod.rs:1119-1126`) holds end-to-end.
     pub(super) decoder: Option<crate::tokenizer::StreamingDecoder<'static>>,
-    /// Thinking-phase buffer: decoded text not yet emitted because it
-    /// might be the prefix of an `</end_tag>` substring straddling the
-    /// last decoder chunk. On each step we emit everything except the
-    /// last `end_tag.len() - 1` bytes (which could be the start of a
-    /// pending tag), and on substring-match we flush + transition.
-    pub(super) pending_pre_tag: String,
+    /// Thinking-phase streaming scanner. Lazily constructed from
+    /// `ReasoningParser::create_thinking_scanner()` on the first
+    /// thinking chunk; reset to `None` on `enter_content` so a
+    /// hallucinated `<think>` re-open from Content rebuilds a
+    /// fresh scanner on the next thinking chunk.
+    ///
+    /// Owns BOTH end-tag (`</think>`) detection across chunks AND
+    /// model-specific leak-pattern cleanup, with the same stateful
+    /// safe-emit idiom used by `StreamingToolDetector` and
+    /// `sanitize_content_chunk` in the Content phase. Replaces the
+    /// previous `pending_pre_tag` hold-drain buffer + stateless
+    /// `cleanup_reasoning_leaks` cascade.
+    pub(super) thinking_scanner:
+        Option<Box<dyn crate::reasoning_parser::ThinkingScanner>>,
     /// Set true once the first non-whitespace `content` byte has been
     /// emitted (or once Content state was entered without prior
     /// thinking). Until then, Content-state deltas are `trim_start`ed
@@ -130,7 +138,7 @@ impl StreamState {
     pub(super) fn new(tools_active: bool, enable_thinking: bool) -> Self {
         Self {
             decoder: None,
-            pending_pre_tag: String::new(),
+            thinking_scanner: None,
             // If thinking is disabled, the assistant turn opens
             // directly in Content state — there's no `</think>\n\n`
             // boundary to trim, so content_started begins `true`.
@@ -180,6 +188,8 @@ impl StreamState {
 
     /// Transition Thinking → Content. No-op from Content (idempotent
     /// re-entry on the same chunk) and from Stopped (terminal).
+    /// Drops the thinking scanner (rebuilt lazily on the next
+    /// Thinking re-entry).
     pub(super) fn enter_content(&mut self) {
         match self.phase {
             StreamPhase::Thinking => {
@@ -187,19 +197,20 @@ impl StreamState {
                 if let Some(det) = self.detector.as_mut() {
                     det.reset();
                 }
+                self.thinking_scanner = None;
             }
             StreamPhase::Content | StreamPhase::Stopped => {}
         }
     }
 
     /// Transition Content → Thinking, on a hallucinated `<think>`
-    /// re-open mid-content. Clears the pre-tag buffer and arms the
-    /// content-start trim for the next `</end_tag>` boundary.
+    /// re-open mid-content. Resets the content-start trim; the
+    /// thinking scanner is `None` here (cleared by `enter_content`)
+    /// and gets lazily rebuilt on the next thinking chunk.
     pub(super) fn enter_thinking(&mut self) {
         match self.phase {
             StreamPhase::Content => {
                 self.phase = StreamPhase::Thinking;
-                self.pending_pre_tag.clear();
                 self.content_started = false;
             }
             StreamPhase::Thinking | StreamPhase::Stopped => {}

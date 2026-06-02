@@ -232,84 +232,84 @@ fn thinking_step(
     chunk: String,
     sse_events: &mut SseVec,
 ) -> Option<String> {
-    let Some(end_tag) = ctx
-        .state
-        .reasoning_parser
-        .as_deref()
-        .map(|p| p.end_tag().to_string())
-    else {
+    // Lazily construct the model-specific thinking scanner. The
+    // scanner owns end-tag detection AND model-specific leak-pattern
+    // cleanup (Qwen3.5/3.6 hallucinated `<think>` re-opens, role-word
+    // loops, stray tool-call XML, etc.), both with cross-chunk
+    // awareness via the same safe-emit idiom used by
+    // `StreamingToolDetector` in the Content phase.
+    let Some(parser) = ctx.state.reasoning_parser.as_deref() else {
         // No reasoning parser configured. Treat the stream as
         // content-only from the start.
         state.enter_content();
         return Some(chunk);
     };
-    state.pending_pre_tag.push_str(&chunk);
-    if let Some(pos) = state.pending_pre_tag.find(end_tag.as_str()) {
-        // End-tag found: emit pre-tag prefix as reasoning, trim the
-        // tag itself plus any leading whitespace from the post-tag
-        // remainder, transition to Content.
-        let after_tag_start = pos + end_tag.len();
-        let pre = state.pending_pre_tag[..pos].to_string();
-        let after = state.pending_pre_tag[after_tag_start..]
-            .trim_start()
-            .to_string();
-        state.pending_pre_tag.clear();
-        if ctx.enable_thinking {
-            emit_thinking(sse_events, state, ctx, &pre);
-            // Flush the reasoning sanitizer's tail-hold buffer at the
-            // Thinking→Content boundary. `emit_thinking` routes through
-            // `sanitize_content_chunk`, which retains up to `tag_max-1`
-            // trailing bytes pending leak-marker fuse on the next chunk
-            // — but there is no next thinking chunk, so without this
-            // flush every thinking block silently loses its tail.
-            let tail = flush_content_sanitizer(
-                &mut state.reasoning_tag_scan_buf,
-                &mut state.reasoning_suppressing_leak,
-                &ctx.leak_markers,
-            );
-            state.reasoning_inside_envelope = false;
-            if !tail.is_empty() {
-                let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, tail);
-                let json = serde_json::to_string(&chunk).unwrap_or_default();
-                sse_events.push(Ok(Event::default().data(json)));
+    let scanner = state
+        .thinking_scanner
+        .get_or_insert_with(|| parser.create_thinking_scanner());
+
+    match scanner.process(&chunk) {
+        crate::reasoning_parser::ThinkingScanResult::Continue { emit } => {
+            if !emit.is_empty() && ctx.enable_thinking {
+                emit_reasoning_sse(sse_events, state, ctx, &emit);
             }
+            None
         }
-        state.enter_content();
-        if after.is_empty() { None } else { Some(after) }
-    } else {
-        // No tag yet: flush everything except the last
-        // `end_tag.len() - 1` bytes (which could be the start of a
-        // tag straddling the next decoder step). Tail-hold is sliced
-        // on a UTF-8 char boundary.
-        let hold = end_tag.len().saturating_sub(1);
-        let total = state.pending_pre_tag.len();
-        if total > hold {
-            let mut split = total - hold;
-            while split > 0 && !state.pending_pre_tag.is_char_boundary(split) {
-                split -= 1;
-            }
-            let emit_text: String = state.pending_pre_tag.drain(..split).collect();
+        crate::reasoning_parser::ThinkingScanResult::Transition {
+            final_reasoning,
+            content_start,
+        } => {
             if ctx.enable_thinking {
-                emit_thinking(sse_events, state, ctx, &emit_text);
+                if !final_reasoning.is_empty() {
+                    emit_reasoning_sse(sse_events, state, ctx, &final_reasoning);
+                }
+                // Flush the reasoning sanitizer's tail-hold buffer at
+                // the Thinking→Content boundary. `emit_reasoning_sse`
+                // routes through `sanitize_content_chunk`, which
+                // retains up to `tag_max-1` trailing bytes pending
+                // leak-marker fuse on the next chunk — but there is
+                // no next thinking chunk after the transition, so
+                // without this flush every thinking block silently
+                // loses its tail.
+                let tail = flush_content_sanitizer(
+                    &mut state.reasoning_tag_scan_buf,
+                    &mut state.reasoning_suppressing_leak,
+                    &ctx.leak_markers,
+                );
+                state.reasoning_inside_envelope = false;
+                if !tail.is_empty() {
+                    let chunk =
+                        ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, tail);
+                    let json = serde_json::to_string(&chunk).unwrap_or_default();
+                    sse_events.push(Ok(Event::default().data(json)));
+                }
+            }
+            state.enter_content();
+            if content_start.is_empty() {
+                None
+            } else {
+                Some(content_start)
             }
         }
-        None
     }
 }
 
-/// Thinking-state emit: apply the active reasoning parser's
-/// `cleanup_reasoning_leaks` (Qwen-specific quirks live there), then
-/// run the structured leak-marker sanitiser, then push a
-/// `reasoning_chunk` SSE event if anything non-whitespace remains.
-fn emit_thinking(sse_events: &mut SseVec, state: &mut StreamState, ctx: &StreamCtx, text: &str) {
-    let cleaned = ctx
-        .state
-        .reasoning_parser
-        .as_deref()
-        .map(|p| p.cleanup_reasoning_leaks(text))
-        .unwrap_or_else(|| text.to_string());
+/// Thinking-state SSE emit: run the model-tool-parser leak-marker
+/// sanitiser (handles envelope markers like `<minimax:tool_call>`
+/// that are tool-parser-level, NOT reasoning-parser-level) and push
+/// a `reasoning_chunk` SSE event if anything non-empty remains.
+///
+/// Reasoning-parser-level quirk cleanup (Qwen `<think>` re-opens,
+/// role-word loops, etc.) ran inside the `ThinkingScanner` upstream
+/// of this function — the text we receive is already cleaned.
+fn emit_reasoning_sse(
+    sse_events: &mut SseVec,
+    state: &mut StreamState,
+    ctx: &StreamCtx,
+    text: &str,
+) {
     let sanitized = sanitize_content_chunk(
-        &cleaned,
+        text,
         &mut state.reasoning_tag_scan_buf,
         &mut state.reasoning_suppressing_leak,
         &mut state.reasoning_inside_envelope,

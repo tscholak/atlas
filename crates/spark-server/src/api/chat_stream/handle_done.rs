@@ -76,6 +76,32 @@ pub(super) fn handle_done(
         }
     }
 
+    // ── Thinking scanner tail flush ─────────────────────────────────
+    // Covers EOS during the Thinking phase (max_tokens hit before
+    // `</think>` arrived). Drains any bytes the scanner was holding
+    // back for safe-emit and routes them through the reasoning
+    // sanitizer below. Runs BEFORE the reasoning sanitizer flush so
+    // the sanitizer sees the scanner output as its input.
+    if let Some(mut scanner) = state.thinking_scanner.take() {
+        let scanner_tail = scanner.flush();
+        if !scanner_tail.is_empty() {
+            let sanitized = sanitize_content_chunk(
+                &scanner_tail,
+                &mut state.reasoning_tag_scan_buf,
+                &mut state.reasoning_suppressing_leak,
+                &mut state.reasoning_inside_envelope,
+                &ctx.leak_markers,
+            );
+            if !sanitized.is_empty() {
+                let chunk =
+                    ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, sanitized);
+                sse_events.push(Ok(
+                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+                ));
+            }
+        }
+    }
+
     // ── Reasoning sanitizer tail flush ──────────────────────────────
     // Mirror of the content-sanitizer flush below. Covers EOS during
     // the Thinking phase (e.g. max_tokens hit before `</think>` arrives)
