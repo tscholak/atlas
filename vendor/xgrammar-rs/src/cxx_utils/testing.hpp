@@ -232,14 +232,16 @@ inline bool traverse_draft_tree(
     if (error_out) {
       error_out->clear();
     }
-    xgrammar::TraverseDraftTree(
+    // v0.2.x: TraverseDraftTree moved from free function in xgrammar:: to
+    // a method on GrammarMatcher with a different signature (no separate
+    // matcher parameter; returns bool for timeout). Translate the wrapper
+    // signature accordingly.
+    return matcher.TraverseDraftTree(
         retrieve_next_token,
         retrieve_next_sibling,
         draft_tokens,
-        matcher,
         bitmask
     );
-    return true;
   } catch (const std::exception& e) {
     if (error_out) {
       *error_out = e.what();

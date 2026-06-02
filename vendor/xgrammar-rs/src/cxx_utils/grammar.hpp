@@ -173,32 +173,17 @@ inline std::unique_ptr<xgrammar::Grammar> grammar_from_structural_tag(
     const std::string& structural_tag_json,
     std::string* error_out
 ) {
-  try {
+  auto result = xgrammar::Grammar::FromStructuralTag(structural_tag_json);
+  if (std::holds_alternative<xgrammar::StructuralTagError>(result)) {
     if (error_out) {
-      error_out->clear();
-    }
-    auto result = xgrammar::Grammar::FromStructuralTag(structural_tag_json);
-    if (std::holds_alternative<xgrammar::StructuralTagError>(result)) {
-      if (error_out) {
-        const auto& err = std::get<xgrammar::StructuralTagError>(result);
-        std::visit([&](const auto& e) { *error_out = e.what(); }, err);
-      }
-      return nullptr;
-    }
-    return std::make_unique<xgrammar::Grammar>(
-        std::get<xgrammar::Grammar>(std::move(result))
-    );
-  } catch (const std::exception& e) {
-    if (error_out) {
-      *error_out = e.what();
-    }
-    return nullptr;
-  } catch (...) {
-    if (error_out) {
-      *error_out = "unknown C++ exception in structural tag compilation";
+      const auto& err = std::get<xgrammar::StructuralTagError>(result);
+      std::visit([&](const auto& e) { *error_out = e.what(); }, err);
     }
     return nullptr;
   }
+  return std::make_unique<xgrammar::Grammar>(
+      std::get<xgrammar::Grammar>(std::move(result))
+  );
 }
 
 } // namespace cxx_utils
