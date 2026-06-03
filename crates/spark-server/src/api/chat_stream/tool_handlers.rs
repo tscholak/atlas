@@ -139,9 +139,14 @@ pub(super) fn handle_tool_call_start(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
     }
-    state
-        .streaming_tool_args
-        .insert(idx, (name.clone(), String::new()));
+    state.streaming_tool_args.insert(
+        idx,
+        super::state::StreamingToolCall {
+            id: tc_id.clone(),
+            name: name.clone(),
+            args: String::new(),
+        },
+    );
     let tc = tool_parser::ToolCall {
         id: tc_id,
         call_type: "function".to_string(),
@@ -192,9 +197,10 @@ pub(super) fn handle_tool_call_delta(
 ) {
     let mut emit_args = args.clone();
     if let Some(entry) = state.streaming_tool_args.get_mut(&idx) {
-        let name = entry.0.clone();
+        let name = entry.name.clone();
+        let id = entry.id.clone();
         let mut tc = tool_parser::ToolCall {
-            id: format!("call_{:016x}", idx),
+            id,
             call_type: "function".into(),
             function: tool_parser::FunctionCall {
                 name: name.clone(),
@@ -216,7 +222,7 @@ pub(super) fn handle_tool_call_delta(
             let msg = format!("[atlas] Tool call rejected: {e}");
             // Drop `entry` borrow first (it holds &mut state.streaming_tool_args)
             // so we can call &mut state methods (record_content, mark_stopped).
-            entry.1.push_str(&args);
+            entry.args.push_str(&args);
             state.record_content(&msg);
             let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
             sse_events.push(Ok(
@@ -226,7 +232,7 @@ pub(super) fn handle_tool_call_delta(
             return;
         }
         emit_args = tc.function.arguments.clone();
-        entry.1.push_str(&emit_args);
+        entry.args.push_str(&emit_args);
     } else if !args.is_empty() {
         // No prior ToolCallStart for this idx — keep legacy passthrough.
     }
@@ -253,14 +259,20 @@ pub(super) fn handle_tool_call_delta(
 const MAX_CONSEC_SAME_NAME_CALLS: u32 = 6;
 
 pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx: usize) {
-    if let Some((name, args_json)) = state.streaming_tool_args.remove(&idx) {
+    if let Some(super::state::StreamingToolCall {
+        id,
+        name,
+        args: args_json,
+    }) = state.streaming_tool_args.remove(&idx)
+    {
         // Observability dump: the streaming detector's per-fragment
         // SSE emits are assembled client-side into a single
-        // `tool_calls[]` entry. Record the same assembled shape into
-        // the dump accumulator so the dumped response matches what
-        // the client saw.
+        // `tool_calls[]` entry. Record the same assembled shape — with
+        // the id the client saw on the wire (not a re-derivation from
+        // idx) — into the dump accumulator so the dumped response is
+        // a faithful replay.
         state.record_tool_call(tool_parser::ToolCall {
-            id: format!("call_{:016x}", idx),
+            id,
             call_type: "function".to_string(),
             function: tool_parser::FunctionCall {
                 name: name.clone(),

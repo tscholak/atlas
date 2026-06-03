@@ -32,6 +32,18 @@ pub(super) enum StreamPhase {
     Stopped,
 }
 
+/// Per-tool-call state held in `StreamState::streaming_tool_args`
+/// across the streaming `ToolCallStart` → `ToolCallArgDelta`* →
+/// `ToolCallEnd` event sequence. The id comes from the detector
+/// (via `next_tool_call_id`) at `ToolCallStart` and is preserved
+/// verbatim so the observability dump records the same id the
+/// client saw over SSE.
+pub(super) struct StreamingToolCall {
+    pub(super) id: String,
+    pub(super) name: String,
+    pub(super) args: String,
+}
+
 pub(super) struct StreamState {
     /// Lazy streaming-decoder over the model output. Created on the
     /// first token with `skip_special_tokens=false` so that protocol
@@ -107,9 +119,17 @@ pub(super) struct StreamState {
     /// F11: tighter within-response tool-arg dedup for the
     /// streaming `ToolCallEnd` path.
     pub(super) tool_arg_dedup_within: crate::tool_arg_dedup::ToolArgDedup,
-    /// F11: per-streaming-toolcall accumulator keyed by `oa_idx`.
-    /// Holds (name, args_so_far) until `ToolCallEnd` runs the dedup.
-    pub(super) streaming_tool_args: HashMap<usize, (String, String)>,
+    /// Per-streaming-toolcall accumulator keyed by `oa_idx`. Holds the
+    /// upstream-minted id (so it can be replayed verbatim into the
+    /// observability dump at end-of-stream, matching what the client
+    /// saw on the SSE wire), the tool name, and args-so-far. The id
+    /// flows through state from `handle_tool_call_start` (where the
+    /// detector hands it to us via `tc_id`) to `handle_tool_call_end`
+    /// (where the dump recorder reads it). Never re-derived from
+    /// `idx` — re-derivation would diverge from the SSE-emitted id
+    /// under interleaved requests, because the upstream id comes from
+    /// a global counter while `idx` is per-request.
+    pub(super) streaming_tool_args: HashMap<usize, StreamingToolCall>,
     /// F12: per-response total tool-call count.
     pub(super) tool_calls_emitted_count: usize,
     /// Bug-2 (OpenClaw 2026-05-08): per-tool-name consecutive-call
