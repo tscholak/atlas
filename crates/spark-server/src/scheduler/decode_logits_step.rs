@@ -159,55 +159,6 @@ pub fn process_decode_logits(
         a.last_token = tok;
         a.last_token_time = now;
 
-        // Spontaneous <think>: model generates <think> even when thinking
-        // was not requested. Enter thinking mode so EOS is suppressed and
-        // thinking content is stripped. Matches vLLM's behavior of always
-        // parsing <think>...</think> regardless of enable_thinking setting.
-        //
-        // F9+F10 (2026-04-26): the sample-time logit mask at line ~1716
-        // hard-blocks `<think>` when `think_ended=true`, so this branch
-        // should not fire after a watchdog has force-closed thinking.
-        // Defence-in-depth: if the model somehow still emits <think>
-        // (e.g. the start token differs from the masked one in edge
-        // cases), decay the budget by `>> watchdog_fires.min(4)` so
-        // each successive re-entry has a tighter window. After 4+
-        // fires, the budget is 1/16 of normal — the watchdog kills
-        // re-entry within a handful of tokens.
-        if !a.inside_thinking && think_start_token == Some(tok) {
-            let decay_shift = a.think_watchdog_fires.min(4);
-            let decayed = a.spontaneous_think_budget >> decay_shift;
-            a.inside_thinking = true;
-            a.think_ended = false; // reset so </think> detection path works
-            a.think_skip_count = 0;
-            a.thinking_budget = Some(decayed.max(8)); // floor to keep watchdog functional
-            if a.think_watchdog_fires > 0 {
-                tracing::debug!(
-                    fires = a.think_watchdog_fires,
-                    decayed_budget = decayed,
-                    "Spontaneous <think> re-entry after watchdog; decayed budget"
-                );
-            } else {
-                tracing::debug!("Spontaneous <think> detected, entering thinking mode");
-            }
-            continue; // don't emit <think> as content
-        }
-
-        // Silently skip </think> tokens outside thinking mode.
-        // At long context (37k+), models degenerate into repeating </think>.
-        // Skip up to 50 occurrences, then force-stop. This gives cached
-        // prompts a chance to produce content while limiting degenerate loops.
-        if !a.inside_thinking && think_end_token == Some(tok) {
-            a.think_skip_count += 1;
-            if a.think_skip_count >= 50 {
-                a.finished = true;
-            }
-            continue;
-        }
-        // Reset skip counter when a real content token is generated.
-        if a.think_ended {
-            a.think_skip_count = 0;
-        }
-
         // Advance grammar state with the sampled token — but only
         // once thinking is finished, because thinking tokens are
         // stripped from the API output and should not consume grammar

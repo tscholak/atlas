@@ -83,6 +83,11 @@ pub(crate) fn resolve_tokenizer_runtime(
         tracing::info!("Thinking start token: {tid} (<think>)");
     }
 
+    // ChatML role-boundary token (`<|im_start|>`): register as an EOS so
+    // xgrammar masks it whenever the grammar isn't at a terminating
+    // position, and the scheduler's regular EOS path stops cleanly when
+    // the grammar permits termination. Pure pre-sample mechanism — no
+    // posthoc hard-stop. (vLLM's `stop_token_ids` pattern.)
     let im_start_id: Option<u32> = tokenizer
         .encode("<|im_start|>")
         .ok()
@@ -91,8 +96,7 @@ pub(crate) fn resolve_tokenizer_runtime(
         if !eos_tokens.contains(&id) {
             eos_tokens.push(id);
         }
-        crate::scheduler::set_im_start_hard_stop(id);
-        tracing::info!("ChatML role-boundary hard stop: <|im_start|> (id {id}) registered");
+        tracing::info!("ChatML role-boundary EOS: <|im_start|> (id {id}) registered");
     }
 
     let reflection_words = [

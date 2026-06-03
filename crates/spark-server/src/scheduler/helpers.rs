@@ -52,34 +52,6 @@ pub fn log_logits_top5(
     );
 }
 
-/// Global hard-stop token for ChatML role boundaries (`<|im_start|>`).
-///
-/// Set once at startup from `main.rs::set_im_start_hard_stop` when the
-/// tokenizer exposes `<|im_start|>` as a single token id (Qwen3.5/3.6 family
-/// tokenizers: id 248045). Read from `emit_token` to bail out of the turn
-/// regardless of grammar / tool-call / min_tokens suppression — otherwise
-/// the model can sample `<|im_start|>`, have it silently swallowed as a
-/// suppressed EOS, and continue emitting the following role literal
-/// (`user` / `assistant`, plain BPE tokens) which DO stream to the client.
-///
-/// 0 = unset / no hard-stop (non-Qwen tokenizers). The value is checked
-/// with `load(Ordering::Relaxed)` on the emit path — no atomicity contract
-/// beyond "set once before the first request lands", which is guaranteed
-/// by the main.rs init ordering.
-static IM_START_HARD_STOP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-/// Install the ChatML role-boundary hard-stop. Called once from `main.rs`
-/// at startup when `<|im_start|>` resolves to a single token id. Noop when
-/// called with 0.
-pub fn set_im_start_hard_stop(id: u32) {
-    IM_START_HARD_STOP.store(id, std::sync::atomic::Ordering::Relaxed);
-}
-
-#[inline]
-pub fn im_start_hard_stop() -> Option<u32> {
-    let id = IM_START_HARD_STOP.load(std::sync::atomic::Ordering::Relaxed);
-    if id == 0 { None } else { Some(id) }
-}
 // ── Sampling defaults (SSOT) ────────────────────────────────────────────────
 // All SamplingParams constructors reference these constants. Change here, not
 // at each call site.

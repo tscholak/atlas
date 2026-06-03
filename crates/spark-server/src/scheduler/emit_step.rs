@@ -13,60 +13,6 @@ use super::*;
 /// When `logprobs` is Some, the logprobs data is accumulated for blocking
 /// responses and sent via `StreamEvent::TokenWithLogprobs` for streaming.
 pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::TokenLogprobs>) {
-    // ChatML role-boundary HARD stop (`<|im_start|>`).
-    //
-    // Handled BEFORE grammar advance / EOS suppression: if the model
-    // hallucinated a `<|im_start|>` mid-turn, we must end the turn regardless
-    // of grammar / require_tool_call / min_tokens. The regular EOS path at
-    // line ~3020 honors `suppress_eos`, which is true while a tool-call
-    // grammar is active — so if we fell through to it, the tokenizer would
-    // strip `<|im_start|>` (special-token) but the following role literal
-    // (`user` / `assistant` — regular tokens) would stream to the client,
-    // poisoning its context and causing the observed multi-turn drift /
-    // "file was corrupted" hallucinations in opencode.
-    if let Some(ims) = im_start_hard_stop()
-        && tok == ims
-    {
-        // Push the hard-stop token to output_tokens so lifecycle.rs reports
-        // `finish_reason="stop"` (because `<|im_start|>` is registered in
-        // `eos_tokens` at startup — see tokenizer_runtime.rs::im_start_id).
-        // Without this push, `last_tok = output_tokens.last()` is the prior
-        // content token, lifecycle's `is_eos` check fails, and the response
-        // is mis-reported as `finish_reason="length"` (Bug 3 from OpenClaw
-        // 2026-05-08 session: "Done: 13 tokens (length) despite max_tokens=
-        // 8192" — clients then misinterpret the truncation as a real
-        // length-limit hit and either retry or surface a wrong error).
-        // The streamed-text path strips stop tokens server-side, so the
-        // client never sees the literal `<|im_start|>` bytes.
-        a.output_tokens.push(tok);
-        a.finished = true;
-        tracing::debug!(
-            "<|im_start|> hard-stop fired (id={ims}); ending turn before grammar/suppress_eos"
-        );
-        return;
-    }
-
-    // Spontaneous <think>: model generates <think> even when thinking was not
-    // requested. Enter thinking mode so EOS is suppressed and thinking content
-    // is stripped. This handles MTP bootstrap/verify paths.
-    if !a.inside_thinking && a.think_start_token == Some(tok) {
-        a.inside_thinking = true;
-        a.think_ended = false;
-        a.think_skip_count = 0;
-        a.thinking_budget = Some(a.spontaneous_think_budget);
-        tracing::debug!("Spontaneous <think> detected in emit_token, entering thinking mode");
-        return; // don't emit <think> as content
-    }
-
-    // Silently skip </think> tokens outside thinking mode (same as process_decode_logits).
-    if !a.inside_thinking && a.think_end_token == Some(tok) {
-        a.think_skip_count += 1;
-        if a.think_skip_count >= 50 {
-            a.finished = true;
-        }
-        return;
-    }
-
     // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.
     // Guard with !inside_thinking — tool calls inside thinking are spurious.
     if a.require_tool_call && a.tool_call_start_token == Some(tok) && !a.inside_thinking {
