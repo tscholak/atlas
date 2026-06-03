@@ -10,6 +10,19 @@ impl GrammarEngine {
     /// Build and compile a structural tag grammar from raw JSON components.
     /// This bypasses xgrammar-rs's `compile_structural_tag` wrapper to access
     /// `at_least_one` and `stop_after_first` parameters.
+    ///
+    /// The free-text portion of the resulting `triggered_tags` excludes
+    /// `<think>` and `</think>` substrings. These are structural invariants
+    /// of the response shape:
+    ///   * Under `enable_thinking=false` (the deployed chat template renders
+    ///     an empty `<think>\n\n</think>\n\n` block in the prompt and the
+    ///     response shape is content-only), the model must not re-emit a
+    ///     thinking block in its generated output.
+    ///   * Under `enable_thinking=true`, the post-think content phase
+    ///     (this `triggered_tags`, after the const-string `</think>`
+    ///     transition in `compile_thinking_wrapped_structural_tag`) must
+    ///     not contain a fresh `<think>` re-open or a stray duplicate
+    ///     `</think>` — exactly one thinking block is allowed.
     pub(super) fn compile_structural_tag_raw(
         &mut self,
         triggers: &[String],
@@ -25,6 +38,7 @@ impl GrammarEngine {
                 "tags": tags,
                 "at_least_one": at_least_one,
                 "stop_after_first": stop_after_first,
+                "excludes": ["<think>", "</think>"],
             }
         })
         .to_string();
@@ -36,24 +50,24 @@ impl GrammarEngine {
             .map_err(GrammarError::Compilation)
     }
 
-    /// P7 (2026-06-02): thinking-aware structural tag wrapper.
+    /// Thinking-aware structural-tag wrapper.
     ///
-    /// Wraps an existing `triggered_tags` body in a `sequence` that first
-    /// matches thinking content via `any_text` with leak-pattern excludes,
+    /// Wraps a `triggered_tags` body in a `sequence` that first matches
+    /// thinking content via `any_text` with structural-leak excludes,
     /// then `</think>`, then the post-think triggered_tags. The matcher
     /// engages from the first generated token (immediately after the
-    /// chat-template's `<think>\n`), so the leak patterns the
-    /// `QwenThinkingScanner` 6-rule engine used to scrub are now
-    /// forbidden at the bitmask level.
+    /// chat-template's `<think>\n`), so the excluded structural openers
+    /// and closers are masked at the bitmask level throughout thinking.
     ///
-    /// Excludes (the chat-template thinking surface a model trained on
-    /// Qwen3 leaks into):
-    ///   - `<think>`  — model re-opens
+    /// Excludes — substrings of decoded bytes the model may not produce
+    /// inside the thinking region. These are STRUCTURAL invariants only
+    /// (openers/closers that would corrupt the post-think state). Model
+    /// degeneration patterns (role-word stuttering, template echo) are
+    /// NOT excluded here — they are model-quality / chat-template issues
+    /// to address at their source, never patched at the grammar layer.
+    ///   - `<think>`  — re-open
     ///   - `<function=`, `<tool_call>`, `<parameter=` — tool-call openers
     ///   - `</function>`, `</tool_call>`, `</parameter>` — stray closers
-    ///
-    /// The model is otherwise free during thinking — any natural language
-    /// text that doesn't contain these substrings is allowed.
     pub(super) fn compile_thinking_wrapped_structural_tag(
         &mut self,
         triggers: &[String],
@@ -85,6 +99,11 @@ impl GrammarEngine {
                         "tags": tags,
                         "at_least_one": at_least_one,
                         "stop_after_first": stop_after_first,
+                        // Exactly one thinking block. The post-think content
+                        // phase must not re-emit `<think>` (which would imply
+                        // a second thinking block) nor `</think>` (the unique
+                        // closer was consumed by the const_string above).
+                        "excludes": ["<think>", "</think>"],
                     },
                 ],
             }

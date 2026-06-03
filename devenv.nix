@@ -69,13 +69,17 @@ let
   };
 
   # xgrammar source for xgrammar-rs's build.rs. Avoids the in-build
-  # git fetch that fails offline. Same rev as heim's atlas derivation,
-  # so the dev binary's xgrammar matches production bit-for-bit.
+  # git fetch that fails offline. Same rev as heim's atlas derivation
+  # (`heim/packages/atlas/default.nix`), so the dev binary's xgrammar
+  # matches production bit-for-bit. Bumped 0.1.32 -> 0.2.1 to match
+  # the fork's wrapper (which expects `GrammarMatcher::TraverseDraftTree`,
+  # only available in v0.2.x — see HEIM.md "vendor xgrammar-rs at heim/main
+  # wrapping xgrammar v0.2.1").
   xgrammarSrc = pkgs.fetchFromGitHub {
     owner = "mlc-ai";
     repo = "xgrammar";
-    rev = "v0.1.32";
-    hash = "sha256-TIWuMI4d3ETc/ZItYwVmLtSHmQczevrXXHEAikg9Tmw=";
+    rev = "v0.2.1";
+    hash = "sha256-h9ovM/HbbkrxHGlJNn8eEisD5fnfRGCwoSOwc6HgpVQ=";
     fetchSubmodules = true;
   };
 in
