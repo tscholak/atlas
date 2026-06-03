@@ -152,6 +152,7 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
 
     if state.is_stopped() {
         if !delta.is_empty() {
+            state.record_content(&delta);
             let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, delta);
             let json = serde_json::to_string(&chunk).unwrap_or_default();
             sse_events.push(Ok(Event::default().data(json)));
@@ -278,6 +279,7 @@ fn thinking_step(
                 );
                 state.reasoning_inside_envelope = false;
                 if !tail.is_empty() {
+                    state.record_reasoning(&tail);
                     let chunk =
                         ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, tail);
                     let json = serde_json::to_string(&chunk).unwrap_or_default();
@@ -323,6 +325,7 @@ fn emit_reasoning_sse(
     // `thefarmer`/`ina week`/`perday` artifacts when joining the SSE
     // deltas back together client-side.
     if !sanitized.is_empty() {
+        state.record_reasoning(&sanitized);
         let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, sanitized);
         let json = serde_json::to_string(&chunk).unwrap_or_default();
         sse_events.push(Ok(Event::default().data(json)));
@@ -395,6 +398,7 @@ fn process_detector_content(
     }
 
     if !sanitized.is_empty() {
+        state.record_content(sanitized);
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized.to_string());
         let json = serde_json::to_string(&chunk).unwrap_or_default();
         let events: SseVec = vec![Ok(Event::default().data(json))];

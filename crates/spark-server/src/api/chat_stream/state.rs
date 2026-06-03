@@ -125,6 +125,29 @@ pub(super) struct StreamState {
     pub(super) name_run: Option<(String, u32)>,
     /// Streaming tool-call detector (`Some` iff `tools_active`).
     pub(super) detector: Option<tool_parser::StreamingToolDetector>,
+
+    // ── Observability accumulators ────────────────────────────────
+    //
+    // `dump_content` / `dump_reasoning_content` / `dump_tool_calls`
+    // are a faithful, source-of-truth replay of what was emitted to
+    // the client over SSE. They are populated by the `record_*`
+    // methods at every SSE emit site, and assembled into a
+    // `ChatCompletionResponse`-shaped body in `handle_done.rs` for
+    // the `atlas::dump` observability event.
+    //
+    // This mirrors the non-streaming `chat_blocking.rs` path which
+    // already dumps a full response — so the streaming and blocking
+    // dumps now have the same JSON shape.
+
+    /// Full content text emitted as SSE `content_chunk` events
+    /// during this request. Populated by `record_content`.
+    pub(super) dump_content: String,
+    /// Full reasoning text emitted as SSE `reasoning_chunk` events
+    /// during this request. Populated by `record_reasoning`.
+    pub(super) dump_reasoning_content: String,
+    /// Finalized tool calls emitted during this request, in emission
+    /// order. Populated by `record_tool_call`.
+    pub(super) dump_tool_calls: Vec<crate::tool_parser::ToolCall>,
 }
 
 impl StreamState {
@@ -162,7 +185,29 @@ impl StreamState {
             } else {
                 None
             },
+            dump_content: String::new(),
+            dump_reasoning_content: String::new(),
+            dump_tool_calls: Vec::new(),
         }
+    }
+
+    /// Record content bytes emitted on the `content` SSE channel.
+    /// Called at every `content_chunk` SSE emit site.
+    pub(super) fn record_content(&mut self, text: &str) {
+        self.dump_content.push_str(text);
+    }
+
+    /// Record reasoning bytes emitted on the `reasoning_content`
+    /// SSE channel. Called at every `reasoning_chunk` SSE emit site.
+    pub(super) fn record_reasoning(&mut self, text: &str) {
+        self.dump_reasoning_content.push_str(text);
+    }
+
+    /// Record a finalized tool call (emitted in full, or assembled
+    /// from streaming `ToolCallStart` / `ToolCallDelta` / `ToolCallEnd`
+    /// events).
+    pub(super) fn record_tool_call(&mut self, tc: crate::tool_parser::ToolCall) {
+        self.dump_tool_calls.push(tc);
     }
 
     pub(super) fn phase(&self) -> StreamPhase {
@@ -213,5 +258,65 @@ impl StreamState {
     /// emit the finish_reason and final usage block.
     pub(super) fn mark_stopped(&mut self) {
         self.phase = StreamPhase::Stopped;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool_parser::{FunctionCall, ToolCall};
+
+    fn tc(name: &str, args: &str) -> ToolCall {
+        ToolCall {
+            id: format!("call_{name}"),
+            call_type: "function".to_string(),
+            function: FunctionCall {
+                name: name.to_string(),
+                arguments: args.to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn recorder_accumulates_content_across_calls() {
+        let mut s = StreamState::new(false, false);
+        s.record_content("Hello, ");
+        s.record_content("world");
+        s.record_content("!");
+        assert_eq!(s.dump_content, "Hello, world!");
+    }
+
+    #[test]
+    fn recorder_accumulates_reasoning_across_calls() {
+        let mut s = StreamState::new(false, true);
+        s.record_reasoning("first ");
+        s.record_reasoning("second ");
+        s.record_reasoning("third");
+        assert_eq!(s.dump_reasoning_content, "first second third");
+    }
+
+    #[test]
+    fn recorder_collects_tool_calls_in_emission_order() {
+        let mut s = StreamState::new(true, false);
+        s.record_tool_call(tc("a", "{\"x\":1}"));
+        s.record_tool_call(tc("b", "{\"y\":2}"));
+        s.record_tool_call(tc("c", "{}"));
+        let names: Vec<&str> = s
+            .dump_tool_calls
+            .iter()
+            .map(|t| t.function.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+        assert_eq!(s.dump_tool_calls[0].function.arguments, "{\"x\":1}");
+        assert_eq!(s.dump_tool_calls[1].function.arguments, "{\"y\":2}");
+        assert_eq!(s.dump_tool_calls[2].function.arguments, "{}");
+    }
+
+    #[test]
+    fn recorders_start_empty() {
+        let s = StreamState::new(false, false);
+        assert!(s.dump_content.is_empty());
+        assert!(s.dump_reasoning_content.is_empty());
+        assert!(s.dump_tool_calls.is_empty());
     }
 }

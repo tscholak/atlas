@@ -50,6 +50,7 @@ pub(super) fn handle_done(
                         &ctx.leak_markers,
                     );
                     if !sanitized.is_empty() {
+                        state.record_content(&sanitized);
                         let chunk =
                             ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
                         sse_events.push(Ok(Event::default()
@@ -93,6 +94,7 @@ pub(super) fn handle_done(
                 &ctx.leak_markers,
             );
             if !sanitized.is_empty() {
+                state.record_reasoning(&sanitized);
                 let chunk =
                     ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, sanitized);
                 sse_events.push(Ok(
@@ -113,6 +115,7 @@ pub(super) fn handle_done(
         &ctx.leak_markers,
     );
     if !reasoning_tail.is_empty() {
+        state.record_reasoning(&reasoning_tail);
         let chunk =
             ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, reasoning_tail);
         sse_events.push(Ok(
@@ -127,6 +130,7 @@ pub(super) fn handle_done(
         &ctx.leak_markers,
     );
     if !tail.is_empty() {
+        state.record_content(&tail);
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail);
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
@@ -195,30 +199,60 @@ pub(super) fn handle_done(
         }
     }
 
-    // --dump synthesized response entry — emit only when the
-    // atlas::dump target is enabled (avoids the json! body assembly
-    // when no subscriber wants it).
+    // --dump response entry — emit only when the atlas::dump target
+    // is enabled (avoids the body assembly when no subscriber wants
+    // it). The body shape matches `chat_blocking.rs`'s response dump
+    // (`ChatCompletionResponse`), populated from per-channel
+    // accumulators on `state` (`dump_content`, `dump_reasoning_content`,
+    // `dump_tool_calls`) that record every byte and structured value
+    // emitted to the client over SSE. This makes the streaming dump
+    // a faithful replay of what the client received, parity with the
+    // blocking dump, and forensically inspectable in journald.
     if let Some(seq) = ctx.dump_seq
         && tracing::event_enabled!(target: "atlas::dump", tracing::Level::INFO)
     {
-        let has_tool_calls = state.detector.as_ref().is_some_and(|d| d.has_tool_calls());
-        let body = serde_json::json!({
-            "id": ctx.id,
-            "model": ctx.model,
-            "object": "chat.completion.synthesized",
-            "finish_reason": fr,
-            "has_tool_calls": has_tool_calls,
-            "usage": usage_for_dump,
-            "stop_string_triggered": state.is_stopped(),
-            "loop_watchdog_triggered": state.loop_watchdog_triggered,
-            "_note": "Synthesized from post-sanitizer accumulators; \
-                      per-chunk capture is a follow-up.",
-        });
+        let message = crate::openai::ChatMessage {
+            role: "assistant".to_string(),
+            reasoning_content: if state.dump_reasoning_content.is_empty() {
+                None
+            } else {
+                Some(state.dump_reasoning_content.clone())
+            },
+            reasoning: None,
+            content: if state.dump_content.is_empty() {
+                None
+            } else {
+                Some(state.dump_content.clone())
+            },
+            tool_calls: if state.dump_tool_calls.is_empty() {
+                None
+            } else {
+                Some(state.dump_tool_calls.clone())
+            },
+            annotations: None,
+            refusal: None,
+        };
+        let response = crate::openai::ChatCompletionResponse {
+            id: ctx.id.clone(),
+            object: "chat.completion".to_string(),
+            created: crate::openai::unix_timestamp(),
+            model: ctx.model.clone(),
+            system_fingerprint: Some("fp_atlas".to_string()),
+            choices: vec![crate::openai::ChatChoice {
+                index: 0,
+                message,
+                finish_reason: fr.to_string(),
+                logprobs: None,
+            }],
+            usage: usage_for_dump,
+            service_tier: None,
+            metadata: None,
+        };
         crate::request_dumper::dump_response(
             "/v1/chat/completions",
             seq,
             ctx.request_id.as_str(),
-            &body,
+            &response,
             true,
         );
     }

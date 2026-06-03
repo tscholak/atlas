@@ -8,7 +8,7 @@
 //! file split is invisible to callers (re-exported through `failures/mod.rs`).
 
 /// F12 (2026-04-26): bump the per-response tool-call counter and
-/// trip `stop_string_triggered` when the cap is exceeded. Catches
+/// set the caller's `stop` flag when the cap is exceeded. Catches
 /// pathological responses emitting dozens of tool calls (observed
 /// under heavy looping). Default cap = 12 (env override
 /// `ATLAS_MAX_TOOL_CALLS_PER_RESPONSE`); well below any legitimate

@@ -33,6 +33,7 @@ pub(super) fn handle_complete_tool_call(
         &ctx.leak_markers,
     );
     if !pre_tool_tail.is_empty() {
+        state.record_content(&pre_tool_tail);
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
@@ -48,6 +49,7 @@ pub(super) fn handle_complete_tool_call(
             "tool call validation error: {e}; replacing with content and ending"
         );
         let msg = format!("[atlas] Tool call rejected: {e}");
+        state.record_content(&msg);
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
@@ -99,6 +101,7 @@ pub(super) fn handle_complete_tool_call(
         };
         tracing::info!("Tool call: {}({preview}{s})", tc.function.name);
         crate::metrics::TOOL_CALLS_TOTAL.inc();
+        state.record_tool_call(tc.clone());
         let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&start).unwrap_or_default())
@@ -130,6 +133,7 @@ pub(super) fn handle_tool_call_start(
         &ctx.leak_markers,
     );
     if !pre_tool_tail.is_empty() {
+        state.record_content(&pre_tool_tail);
         let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
@@ -210,13 +214,14 @@ pub(super) fn handle_tool_call_delta(
                 "tool call validation error (stream Δ): {e}; replacing with content and ending"
             );
             let msg = format!("[atlas] Tool call rejected: {e}");
+            // Drop `entry` borrow first (it holds &mut state.streaming_tool_args)
+            // so we can call &mut state methods (record_content, mark_stopped).
+            entry.1.push_str(&args);
+            state.record_content(&msg);
             let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
             sse_events.push(Ok(
                 Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
             ));
-            // Drop `entry` borrow (release `state.streaming_tool_args`)
-            // before calling `state.mark_stopped()` (needs `&mut state`).
-            entry.1.push_str(&args);
             state.mark_stopped();
             return;
         }
@@ -249,6 +254,19 @@ const MAX_CONSEC_SAME_NAME_CALLS: u32 = 6;
 
 pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx: usize) {
     if let Some((name, args_json)) = state.streaming_tool_args.remove(&idx) {
+        // Observability dump: the streaming detector's per-fragment
+        // SSE emits are assembled client-side into a single
+        // `tool_calls[]` entry. Record the same assembled shape into
+        // the dump accumulator so the dumped response matches what
+        // the client saw.
+        state.record_tool_call(tool_parser::ToolCall {
+            id: format!("call_{:016x}", idx),
+            call_type: "function".to_string(),
+            function: tool_parser::FunctionCall {
+                name: name.clone(),
+                arguments: args_json.clone(),
+            },
+        });
         if state.tool_arg_dedup_within.check(&name, &args_json) {
             tracing::warn!(
                 tool = %name,
