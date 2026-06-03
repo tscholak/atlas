@@ -187,14 +187,14 @@ pub fn process_seq_logits(
     // punctuation streams (observed with opencode: the assistant
     // thinking channel filled with `!.,),,,***` before the
     // model recovered after `</think>`).
-    // P7 (2026-06-02): apply the bitmask universally — including
-    // during `<think>...</think>`. The Qwen3 grammar wraps the
-    // thinking phase in an `any_text` block (compile_misc.rs::
-    // compile_thinking_wrapped_structural_tag) that allows any
-    // natural text but masks the leak patterns the model leaks
-    // (`<function=`, `<tool_call>`, stray close tags, etc.). The
-    // `QwenThinkingScanner` Rules 1/3/4/5 are now dead by
-    // construction — the bitmask blocks the tokens at sample time.
+    // Apply the bitmask universally — including during
+    // `<think>...</think>`. The Qwen3 grammar wraps the thinking
+    // phase in an `any_text` block (`compile_misc.rs::
+    // compile_thinking_wrapped_structural_tag`) that allows any
+    // natural text but masks structural markers (`<function=`,
+    // `<tool_call>`, stray close tags) at the token level, so the
+    // model cannot emit tool-call openers or stray closers from
+    // inside the thinking region.
     if let Some(ref mut gs) = a.grammar_state
         && gs.fill_bitmask()
     {

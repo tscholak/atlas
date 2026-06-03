@@ -258,15 +258,15 @@ impl GrammarEngine {
         let at_least_one = !use_triggers;
         let stop_after_first = !use_triggers;
 
-        // P7 (2026-06-02): when the chat template opens a `<think>` block,
-        // wrap the triggered_tags portion in a `sequence` that first
-        // matches thinking content (any text, excluding tool-call leak
-        // patterns) and `</think>`. The matcher then engages from token
-        // 0 of generation (immediately after the prompt's `<think>\n`)
-        // — see scheduler/{emit_step,decode_logits_seq}.rs P7-2. This
-        // makes the QwenThinkingScanner Rules 1/3/4/5 dead by
-        // construction: the model can't emit `<function=` mid-think
-        // because the bitmask masks it.
+        // When the chat template opens a `<think>` block, the
+        // grammar wraps the triggered_tags portion in a `sequence`:
+        // any_text (thinking body, excluding tool-call openers and
+        // `<think>` re-opens) → const_string "</think>" (transition)
+        // → triggered_tags (content phase, excluding `<think>`/
+        // `</think>` so the grammar enforces exactly one thinking
+        // block). The matcher engages from token 0 of generation
+        // (immediately after the prompt's `<think>\n`) so structural
+        // markers are masked at every position.
         let compile = |engine: &mut GrammarEngine,
                        tags: &[serde_json::Value]|
          -> Result<CompiledGrammar, GrammarError> {

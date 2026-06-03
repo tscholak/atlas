@@ -33,14 +33,13 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         }
     }
 
-    // P7 (2026-06-02): advance the grammar matcher on every emitted
-    // token, including those inside `<think>...</think>`. The
-    // per-parser grammar spec (Qwen3: `compile_thinking_wrapped_structural_tag`)
-    // wraps the thinking phase in an `any_text` block that allows free
-    // text but excludes the leak patterns the
-    // `reasoning_parser.rs::QwenThinkingScanner` 6-rule engine used
-    // to scrub. The matcher engages from token 0 of generation
-    // (immediately after the prompt's `<think>\n`).
+    // Advance the grammar matcher on every emitted token, including
+    // those inside `<think>...</think>`. The Qwen3 grammar's
+    // `compile_thinking_wrapped_structural_tag` wraps the thinking
+    // phase in an `any_text` block that allows free text but excludes
+    // structural markers (tool-call openers, stray closers,
+    // `<think>` re-opens). The matcher engages from token 0 of
+    // generation (immediately after the prompt's `<think>\n`).
     if let Some(ref mut gs) = a.grammar_state {
         gs.accept_token(tok);
     }
