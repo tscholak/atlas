@@ -191,25 +191,6 @@ pub fn process_decode_logits(
                     a.force_end_thinking = true;
                     tracing::info!("Thinking budget exhausted ({budget} tokens), forcing </think>");
                 }
-                // Token-level fence-loop detection. Catches the Qwen3.5-35B
-                // phrase attractor (`Running:\`\`\`bash cmd\`\`\`Executing:…`
-                // cycling) within ~24-60 tokens of the loop starting,
-                // instead of waiting for the 256-token thinking budget.
-                if !a.force_end_thinking
-                    && a.thinking_tokens >= THINK_LOOP_MIN_TOKENS
-                    && a.thinking_tokens.is_multiple_of(THINK_LOOP_CHECK_STRIDE)
-                    && detect_thinking_token_loop(&a.output_tokens)
-                {
-                    a.force_end_thinking = true;
-                    a.think_watchdog_fires = a.think_watchdog_fires.saturating_add(1);
-                    tracing::warn!(
-                        thinking_tokens = a.thinking_tokens,
-                        watchdog_fires = a.think_watchdog_fires,
-                        "Thinking-loop watchdog fired (period-{}…{} repeat in tail); forcing </think> early",
-                        THINK_LOOP_PERIOD_MIN,
-                        THINK_LOOP_PERIOD_MAX,
-                    );
-                }
             }
         } else {
             a.remaining -= 1;
@@ -220,35 +201,6 @@ pub fn process_decode_logits(
             // first content token (which Change 3b's mask pinned to
             // tool_call_start_token when require_tool_call was set).
             a.think_just_ended = false;
-
-            // Content-phase loop watchdog (2026-04-26 Claude Code
-            // degeneration fix). Catches the agentic-failure mode
-            // where the model emits the same sentence over and over
-            // ("I see I've been creating Cargo.toml files but the
-            // user hasn't given me a task. Let me wait for their
-            // instructions." × 12). LZ penalty at strength 0.2 nudges
-            // but cannot break the attractor once established — the
-            // hard stop here lets the API path emit a clean
-            // finish_reason="length"-equivalent instead of
-            // streaming an unending repetition that wedges Claude
-            // Code's display. Disabled inside grammar/tool-body
-            // because structured JSON repeats are legitimate.
-            if enable_loop_watchdog()
-                && a.grammar_state.is_none()
-                && !a.inside_tool_body
-                && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
-                && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
-                && detect_content_token_loop(&a.output_tokens)
-            {
-                tracing::warn!(
-                    content_tokens = a.content_tokens,
-                    output_len = a.output_tokens.len(),
-                    "Content-loop watchdog fired (period-{}…{} repeat in tail); ending response early",
-                    CONTENT_LOOP_PERIOD_MIN,
-                    CONTENT_LOOP_PERIOD_MAX,
-                );
-                a.finished = true;
-            }
 
             // F2 (2026-04-26): bounded inter-tool prose budget.
             // Counts only free-text tokens (not inside tool body,
@@ -465,39 +417,6 @@ pub fn process_decode_logits(
                 .as_ref()
                 .is_some_and(|gs| gs.is_terminated())
             {
-                a.finished = true;
-            }
-
-            // Intra-response fuzzy repetition detection: if the last 2*W tokens
-            // approximately match the same W-token pattern, the model is looping.
-            // Uses Hamming distance with ~12% tolerance to catch loops where the
-            // model narrates the same plan with slight wording variations.
-            // Skip during tool calls: XML parameter tags have natural repetition
-            // (<parameter=..>...</parameter>) that triggers false positives.
-            // Use last occurrence positions — completed tool calls shouldn't
-            // disable the detector for subsequent text generation.
-            let last_tc_start = a
-                .tool_call_start_token
-                .and_then(|t| a.output_tokens.iter().rposition(|&tok| tok == t));
-            let last_tc_end = a
-                .tool_call_end_token
-                .and_then(|t| a.output_tokens.iter().rposition(|&tok| tok == t));
-            let inside_tool_call = match (last_tc_start, last_tc_end) {
-                (Some(start), Some(end)) => start > end,
-                (Some(_), None) => true,
-                _ => false,
-            };
-            if enable_loop_watchdog()
-                && !a.finished
-                && !a.inside_thinking
-                && !inside_tool_call
-                && let Some((pattern_len, mis_a, mis_b)) = detect_fuzzy_repetition(&a.output_tokens)
-            {
-                tracing::warn!(
-                    "Fuzzy repetition: {pattern_len}-tok pattern x3 ({mis_a}+{mis_b} \
-                     mismatches), stopping at {} tokens",
-                    a.output_tokens.len()
-                );
                 a.finished = true;
             }
 
