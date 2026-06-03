@@ -60,7 +60,7 @@ fn qwen3_coder_grammar_accepts_canonical() {
     let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
     let tools = exec_tool_def();
     let compiled = engine
-        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .compile_qwen3_coder_tool_grammar(&tools, true, false)
         .expect("compile must succeed");
 
     let canonical = "<tool_call>\n<function=exec>\n<parameter=command>\nls /tmp\n</parameter>\n</function>\n</tool_call>";
@@ -80,7 +80,7 @@ fn qwen3_coder_grammar_rejects_empty_required_param() {
     let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
     let tools = exec_tool_def();
     let compiled = engine
-        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .compile_qwen3_coder_tool_grammar(&tools, true, false)
         .expect("compile must succeed");
 
     let empty_body = "<tool_call>\n<function=exec>\n</function>\n</tool_call>";
@@ -120,7 +120,7 @@ fn qwen3_coder_grammar_rejects_empty_with_optional_fields_present() {
     let stop_ids = vec![130i32];
     let mut engine = GrammarEngine::new(&vocab, &stop_ids).unwrap();
     let compiled = engine
-        .compile_qwen3_coder_tool_grammar(&tools, true)
+        .compile_qwen3_coder_tool_grammar(&tools, true, false)
         .expect("compile must succeed");
 
     let empty_body = "<tool_call>\n<function=exec>\n</function>\n</tool_call>";

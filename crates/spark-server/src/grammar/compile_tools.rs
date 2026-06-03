@@ -166,6 +166,7 @@ impl GrammarEngine {
         &mut self,
         tools: &[ToolDefinition],
         use_triggers: bool,
+        enable_thinking: bool,
     ) -> Result<CompiledGrammar, GrammarError> {
         if tools.is_empty() {
             return Err(GrammarError::NoTools);
@@ -257,12 +258,36 @@ impl GrammarEngine {
         let at_least_one = !use_triggers;
         let stop_after_first = !use_triggers;
 
-        match self.compile_structural_tag_raw(
-            &triggers,
-            &tag_entries,
-            at_least_one,
-            stop_after_first,
-        ) {
+        // P7 (2026-06-02): when the chat template opens a `<think>` block,
+        // wrap the triggered_tags portion in a `sequence` that first
+        // matches thinking content (any text, excluding tool-call leak
+        // patterns) and `</think>`. The matcher then engages from token
+        // 0 of generation (immediately after the prompt's `<think>\n`)
+        // — see scheduler/{emit_step,decode_logits_seq}.rs P7-2. This
+        // makes the QwenThinkingScanner Rules 1/3/4/5 dead by
+        // construction: the model can't emit `<function=` mid-think
+        // because the bitmask masks it.
+        let compile = |engine: &mut GrammarEngine,
+                       tags: &[serde_json::Value]|
+         -> Result<CompiledGrammar, GrammarError> {
+            if enable_thinking {
+                engine.compile_thinking_wrapped_structural_tag(
+                    &triggers,
+                    tags,
+                    at_least_one,
+                    stop_after_first,
+                )
+            } else {
+                engine.compile_structural_tag_raw(
+                    &triggers,
+                    tags,
+                    at_least_one,
+                    stop_after_first,
+                )
+            }
+        };
+
+        match compile(self, &tag_entries) {
             Ok(compiled) => Ok(compiled),
             Err(e) => {
                 // Fall back to json_schema content type if qwen_xml_parameter
@@ -295,12 +320,7 @@ impl GrammarEngine {
                         })
                     })
                     .collect();
-                self.compile_structural_tag_raw(
-                    &triggers,
-                    &tag_entries_fallback,
-                    at_least_one,
-                    stop_after_first,
-                )
+                compile(self, &tag_entries_fallback)
             }
         }
     }

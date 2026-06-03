@@ -180,6 +180,7 @@ pub(super) fn build_sampling(
             tools,
             parser: p,
             use_triggers,
+            enable_thinking,
         })
     } else {
         None

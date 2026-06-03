@@ -18,7 +18,11 @@ impl ToolCallParser for HermesParser {
         engine: &mut GrammarEngine,
         tools: &[ToolDefinition],
         use_triggers: bool,
+        _enable_thinking: bool,
     ) -> Option<Result<CompiledGrammar, GrammarError>> {
+        // Thinking-aware grammar wrapping is currently Qwen3-only
+        // (P7-1). Hermes / Gemma4 / MiniMax / BareJson keep the
+        // existing non-thinking spec until per-model migration.
         Some(engine.compile_hermes_tool_grammar(tools, use_triggers))
     }
 

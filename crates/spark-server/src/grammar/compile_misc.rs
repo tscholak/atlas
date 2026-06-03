@@ -36,6 +36,68 @@ impl GrammarEngine {
             .map_err(GrammarError::Compilation)
     }
 
+    /// P7 (2026-06-02): thinking-aware structural tag wrapper.
+    ///
+    /// Wraps an existing `triggered_tags` body in a `sequence` that first
+    /// matches thinking content via `any_text` with leak-pattern excludes,
+    /// then `</think>`, then the post-think triggered_tags. The matcher
+    /// engages from the first generated token (immediately after the
+    /// chat-template's `<think>\n`), so the leak patterns the
+    /// `QwenThinkingScanner` 6-rule engine used to scrub are now
+    /// forbidden at the bitmask level.
+    ///
+    /// Excludes (the chat-template thinking surface a model trained on
+    /// Qwen3 leaks into):
+    ///   - `<think>`  — model re-opens
+    ///   - `<function=`, `<tool_call>`, `<parameter=` — tool-call openers
+    ///   - `</function>`, `</tool_call>`, `</parameter>` — stray closers
+    ///
+    /// The model is otherwise free during thinking — any natural language
+    /// text that doesn't contain these substrings is allowed.
+    pub(super) fn compile_thinking_wrapped_structural_tag(
+        &mut self,
+        triggers: &[String],
+        tags: &[serde_json::Value],
+        at_least_one: bool,
+        stop_after_first: bool,
+    ) -> Result<CompiledGrammar, GrammarError> {
+        let structural_tag_json = serde_json::json!({
+            "type": "structural_tag",
+            "format": {
+                "type": "sequence",
+                "elements": [
+                    {
+                        "type": "any_text",
+                        "excludes": [
+                            "<think>",
+                            "<function=",
+                            "<tool_call>",
+                            "<parameter=",
+                            "</function>",
+                            "</tool_call>",
+                            "</parameter>",
+                        ],
+                    },
+                    {"type": "const_string", "value": "</think>"},
+                    {
+                        "type": "triggered_tags",
+                        "triggers": triggers,
+                        "tags": tags,
+                        "at_least_one": at_least_one,
+                        "stop_after_first": stop_after_first,
+                    },
+                ],
+            }
+        })
+        .to_string();
+
+        let grammar = xgrammar::Grammar::from_structural_tag(&structural_tag_json)
+            .map_err(GrammarError::Compilation)?;
+        self.compiler
+            .compile_grammar(&grammar)
+            .map_err(GrammarError::Compilation)
+    }
+
     // ── JSON schema grammar ──
 
     /// Compile a grammar that enforces a JSON schema.

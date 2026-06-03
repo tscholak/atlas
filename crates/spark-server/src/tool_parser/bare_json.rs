@@ -26,6 +26,7 @@ impl ToolCallParser for BareJsonParser {
         engine: &mut GrammarEngine,
         tools: &[ToolDefinition],
         use_triggers: bool,
+        _enable_thinking: bool,
     ) -> Option<Result<CompiledGrammar, GrammarError>> {
         Some(engine.compile_bare_json_tool_grammar(tools, use_triggers))
     }

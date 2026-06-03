@@ -178,9 +178,6 @@ struct QwenThinkingScanner {
     /// rule 2 (leading `assistant` strip) which only fires before
     /// content has started.
     started: bool,
-    /// True once rule 4's `<function=` hard-stop has fired. All
-    /// subsequent process calls return empty emits until `reset()`.
-    hard_stopped: bool,
     /// End-tag for transition detection.
     end_tag: &'static str,
 }
@@ -190,18 +187,34 @@ impl QwenThinkingScanner {
         Self {
             buf: String::new(),
             started: false,
-            hard_stopped: false,
             end_tag: "</think>",
         }
     }
 
-    /// Apply the 6 leak rules to `self.buf` in place.
+    /// Apply leak rules to `self.buf` in place.
+    ///
+    /// P7 (2026-06-02) retired Rules 1/3/4/5 — they targeted tool-call
+    /// patterns the model leaked into thinking (`<think>` re-opens,
+    /// `<tool_call>...</tool_call>` blocks, `<function=` hard-stop,
+    /// stray `</parameter>` / `</function>` / `</tool_call>` close
+    /// tags). The grammar matcher now engages during thinking with
+    /// `compile_thinking_wrapped_structural_tag`, whose `any_text`
+    /// element's `excludes` list forbids those exact substrings at
+    /// the token-bitmask level. Those rules are now dead by
+    /// construction.
+    ///
+    /// Two rules remain because they target leaks the grammar
+    /// constraint can't easily express:
+    ///
+    /// - **Rule 2** (`assistant\n` / `assistant` prefix strip) targets
+    ///   the chat-template role label echo at the start of an
+    ///   assistant turn. Whether the model emits it depends on
+    ///   tokenizer/template interaction; keeping the scrub is
+    ///   defense-in-depth.
+    /// - **Rule 6** (role-word repetition collapse: `useruser`,
+    ///   `\nuser\n`, etc.) catches a degenerate-generation symptom
+    ///   unrelated to tool-call format. Independent concern.
     fn apply_rules_in_place(&mut self) {
-        // Rule 1: strip `<think>` re-opens.
-        while let Some(pos) = self.buf.find("<think>") {
-            self.buf.replace_range(pos..pos + "<think>".len(), "");
-        }
-
         // Rule 2: strip leading `assistant\n` / `assistant` prefix.
         // Only at absolute start of thinking.
         if !self.started {
@@ -209,34 +222,6 @@ impl QwenThinkingScanner {
                 self.buf = rest.to_string();
             } else if let Some(rest) = self.buf.strip_prefix("assistant") {
                 self.buf = rest.to_string();
-            }
-        }
-
-        // Rule 3: splice out `<tool_call>...</tool_call>` blocks.
-        // Unclosed trailing `<tool_call>` left in buf — safe-emit
-        // hold keeps it from being emitted until `</tool_call>` arrives
-        // or `flush` runs.
-        while let Some(start) = self.buf.find("<tool_call>") {
-            if let Some(end_rel) = self.buf[start..].find("</tool_call>") {
-                let end = start + end_rel + "</tool_call>".len();
-                self.buf.replace_range(start..end, "");
-            } else {
-                // Unclosed at end-of-buffer — leave alone for now.
-                break;
-            }
-        }
-
-        // Rule 4: hard-stop at `<function=`. Drop the tail and latch
-        // hard_stopped so future chunks are silently dropped.
-        if let Some(pos) = self.buf.find("<function=") {
-            self.buf.truncate(pos);
-            self.hard_stopped = true;
-        }
-
-        // Rule 5: strip stray close tags.
-        for tag in ["</parameter>", "</function>", "</tool_call>"] {
-            while let Some(pos) = self.buf.find(tag) {
-                self.buf.replace_range(pos..pos + tag.len(), "");
             }
         }
 
@@ -256,9 +241,6 @@ impl QwenThinkingScanner {
 
 impl ThinkingScanner for QwenThinkingScanner {
     fn process(&mut self, chunk: &str) -> ThinkingScanResult {
-        if self.hard_stopped {
-            return ThinkingScanResult::Continue { emit: String::new() };
-        }
         self.buf.push_str(chunk);
 
         // (a) End-tag detection. The `</think>` substring search
@@ -279,39 +261,20 @@ impl ThinkingScanner for QwenThinkingScanner {
             };
         }
 
-        // (b) Apply leak rules in-place on the buffer.
+        // (b) Apply Rules 2 / 6 in-place on the buffer.
         self.apply_rules_in_place();
-        if self.hard_stopped {
-            // Rule 4 fired during this call — buf was truncated.
-            // Emit whatever's left (may be empty), then future
-            // processes drop everything.
-            let emit = std::mem::take(&mut self.buf);
-            if !emit.is_empty() && !emit.chars().all(char::is_whitespace) {
-                self.started = true;
-            }
-            return ThinkingScanResult::Continue { emit };
-        }
 
-        // (c) Safe-emit boundary. Two sources of hold contribute:
-        //
-        //   - `QWEN_LEAK_TAG_MAX - 1` bytes for any leak-pattern
-        //     prefix at the tail that might complete on the next
-        //     chunk.
-        //   - If rule 3 found an unclosed `<tool_call>` (left in
-        //     place because `</tool_call>` hasn't arrived yet),
-        //     hold from THAT position to the end of buf — the
-        //     close could arrive in any subsequent chunk, possibly
-        //     after a long argument body. Emitting any partial
-        //     `<tool_call>` text would leak XML fragments into the
-        //     reasoning stream.
+        // (c) Safe-emit boundary: hold back `QWEN_LEAK_TAG_MAX - 1`
+        //     bytes for any leak-pattern prefix at the tail that might
+        //     complete on the next chunk. Streaming-correctness
+        //     invariant (tag-straddle protection), not cleanup.
+        //     The P7 grammar constraint forbids tool-call openers
+        //     mid-think at the bitmask level, so the residual cases
+        //     are the `assistant` role-label prefix (Rule 2) or
+        //     role-word loops (Rule 6) — both shorter than
+        //     QWEN_LEAK_TAG_MAX.
         let total = self.buf.len();
-        let hold_for_pattern = QWEN_LEAK_TAG_MAX - 1;
-        let hold_for_unclosed_tool_call = self
-            .buf
-            .find("<tool_call>")
-            .map(|pos| total - pos)
-            .unwrap_or(0);
-        let hold = hold_for_pattern.max(hold_for_unclosed_tool_call);
+        let hold = QWEN_LEAK_TAG_MAX - 1;
         if total <= hold {
             return ThinkingScanResult::Continue { emit: String::new() };
         }
@@ -327,16 +290,6 @@ impl ThinkingScanner for QwenThinkingScanner {
     }
 
     fn flush(&mut self) -> String {
-        if self.hard_stopped {
-            self.buf.clear();
-            return String::new();
-        }
-        // Drop any unclosed `<tool_call>` tail (rule 3 didn't truncate
-        // because a close might have arrived; flush means no more
-        // chunks coming, so it won't).
-        if let Some(start) = self.buf.find("<tool_call>") {
-            self.buf.truncate(start);
-        }
         self.apply_rules_in_place();
         std::mem::take(&mut self.buf)
     }
@@ -344,7 +297,6 @@ impl ThinkingScanner for QwenThinkingScanner {
     fn reset(&mut self) {
         self.buf.clear();
         self.started = false;
-        self.hard_stopped = false;
     }
 }
 

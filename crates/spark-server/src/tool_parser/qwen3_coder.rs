@@ -19,8 +19,9 @@ impl ToolCallParser for Qwen3CoderParser {
         engine: &mut GrammarEngine,
         tools: &[ToolDefinition],
         use_triggers: bool,
+        enable_thinking: bool,
     ) -> Option<Result<CompiledGrammar, GrammarError>> {
-        Some(engine.compile_qwen3_coder_tool_grammar(tools, use_triggers))
+        Some(engine.compile_qwen3_coder_tool_grammar(tools, use_triggers, enable_thinking))
     }
 
     fn has_tool_grammar(&self) -> bool {

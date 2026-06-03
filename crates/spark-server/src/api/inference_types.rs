@@ -38,6 +38,14 @@ pub enum GrammarSpec {
         tools: Vec<tool_parser::ToolDefinition>,
         parser: std::sync::Arc<dyn tool_parser::ToolCallParser>,
         use_triggers: bool,
+        /// When true, the chat template opens `<think>...</think>` and
+        /// the parser's grammar wraps the existing triggered_tags in a
+        /// sequence that first matches thinking content (`AnyTextFormat`
+        /// with leak-pattern excludes), then `</think>`, then the
+        /// post-think portion. Enables the matcher to advance through
+        /// thinking too (P7); when false (template suppresses thinking),
+        /// the parser falls through to the original non-thinking spec.
+        enable_thinking: bool,
     },
     /// Response format: any valid JSON (json_object).
     JsonObject,

@@ -236,6 +236,7 @@ pub trait ToolCallParser: Send + Sync {
         _engine: &mut GrammarEngine,
         _tools: &[ToolDefinition],
         _use_triggers: bool,
+        _enable_thinking: bool,
     ) -> Option<Result<CompiledGrammar, GrammarError>> {
         None
     }
