@@ -53,7 +53,6 @@ use super::sanitizer::{
     F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD, F7StallBuckets, ToolKind, classify_tool,
     extract_bash_final_action, primary_arg_for_tool, sanitize_content_chunk,
 };
-use super::strip::strip_thinking_tags;
 
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::failures::*;

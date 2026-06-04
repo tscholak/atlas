@@ -47,7 +47,6 @@ use super::sanitizer::{
 };
 
 use super::chat::chat_completions_inner;
-use super::strip::strip_thinking_tags;
 
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::failures::*;

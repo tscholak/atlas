@@ -43,7 +43,6 @@ use super::inference_impl::{extract_thinking, strip_stop_sequences, tokenize_sto
 use super::inference_types::{
     GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
 };
-use super::strip::strip_thinking_tags;
 
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::inference_types::*;

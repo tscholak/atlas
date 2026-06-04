@@ -26,7 +26,6 @@
 //!                          `InferenceResponse`, `StreamEvent`,
 //!                          `TokenLogprobs`
 //! - `inference_impl`     — `impl InferenceRequest`
-//! - `strip`              — legacy `strip_thinking_tags` for completions
 //! - `tests/`             — extracted `sanitizer_tests` module split four ways
 
 pub mod chat;
@@ -47,7 +46,6 @@ pub mod responses_stream_finalize;
 pub mod responses_translate;
 pub mod sanitizer;
 pub mod stored;
-pub mod strip;
 pub mod stubs;
 
 #[cfg(test)]

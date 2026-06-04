@@ -36,7 +36,6 @@ use super::super::sanitizer::{
     F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD, F7StallBuckets, ToolKind, classify_tool,
     extract_bash_final_action, primary_arg_for_tool, sanitize_content_chunk,
 };
-use super::super::strip::strip_thinking_tags;
 use super::{
     F23ProgressMetrics, F29EnvironmentFact, F37FailureClass, F49DuplicateWrite,
     append_f7_reminder_to_last_user, build_f7_stall_reminder, bump_f12_tool_call_count,

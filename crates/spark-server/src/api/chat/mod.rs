@@ -21,7 +21,6 @@
 //!                      timeout / logprobs resolution
 
 mod msg_entry;
-pub(super) mod repair_json;
 mod sampling_setup;
 mod template;
 mod thinking;

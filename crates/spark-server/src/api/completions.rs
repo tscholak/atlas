@@ -46,7 +46,6 @@ use super::sanitizer::{
     F7_STALL_REFUSE_THRESHOLD, F7_STALL_WARN_THRESHOLD, F7StallBuckets, ToolKind, classify_tool,
     extract_bash_final_action, primary_arg_for_tool, sanitize_content_chunk,
 };
-use super::strip::strip_thinking_tags;
 
 // Re-export sibling helpers via crate::api::* for short paths.
 use super::failures::*;
@@ -234,7 +233,6 @@ async fn completions_impl(
         }
     };
     let output_text = strip_stop_sequences(output_text, &req.stop);
-    let output_text = strip_thinking_tags(&output_text);
 
     let num_completion = response.output_tokens.len();
     let tokens_per_second = if response.decode_time_ms > 0.0 {
