@@ -1,30 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-#![allow(unused_imports, dead_code)]
-
 //! Streaming `/v1/chat/completions` SSE handler.
 //!
-//! Wave-4g extraction (2026-05-03): the original 1484-LoC
-//! `chat_stream.rs` was a single async fn whose body terminated in
-//! one `flat_map(move |event| { ... })` closure with three deeply
-//! coupled `StreamEvent` arms (`Token | TokenWithLogprobs`, `Done`,
-//! `Error`) and ~24 captured mutable locals plus ~15 read-only
-//! captures.
+//! The scheduler emits `StreamEvent::{Token, TokenWithLogprobs, Done,
+//! Error}` over a tokio mpsc channel. Token events are fed into a
+//! `chat_fsm::Stepper` which emits a canonical `FsmEvent` stream;
+//! `Done` triggers `Stepper::flush` to drain remaining state and emit
+//! the terminal `Stopped` event. The `StreamingAdapter` translates
+//! every event into OpenAI-compatible `ChatCompletionChunk` SSE
+//! chunks and assembles the `--dump` body via a `ChoiceBuilder`.
 //!
 //! Sub-files:
-//! - `state`        — `StreamState`: every captured-mutable local
-//! - `ctx`          — `StreamCtx`: every captured-read-only value
-//! - `handle_token` — Token / TokenWithLogprobs arm + tool-call
-//!                    helpers shared with the Done arm's flush
-//! - `handle_done`  — Done arm (flush, salvage, usage, dump, metrics)
-//! - `handle_error` — Error arm
+//! - `ctx`          — minimal shared state for the error arm
+//! - `adapter`      — `FsmEvent → SSE` translation + dump assembly
+//! - `handle_error` — Error arm (unchanged)
 
+mod adapter;
 mod ctx;
-mod handle_done;
 mod handle_error;
-mod handle_token;
-mod state;
-mod tool_handlers;
 
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive};
@@ -37,10 +30,11 @@ use crate::AppState;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
+use super::chat_fsm::stepper::{Stepper, StepperConfig, extend_tokenizer_lifetime};
 use super::inference_types::{GrammarSpec, InferenceRequest, StreamEvent};
 
+use adapter::{StreamingAdapter, UsageInputs};
 use ctx::StreamCtx;
-use state::StreamState;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn chat_completions_stream(
@@ -68,8 +62,8 @@ pub(crate) async fn chat_completions_stream(
     thinking_budget: Option<u32>,
     tools_active: bool,
     tool_choice_required: bool,
-    tool_defs: Vec<tool_parser::ToolDefinition>,
-    cwd_hint: Option<String>,
+    _tool_defs: Vec<tool_parser::ToolDefinition>,
+    _cwd_hint: Option<String>,
     stop_tokens: Vec<u32>,
     grammar_spec: Option<GrammarSpec>,
     seed: Option<u64>,
@@ -96,9 +90,6 @@ pub(crate) async fn chat_completions_stream(
     let prompt_len = prompt_tokens.len();
 
     // Scheduler tracks thinking only when the template actually opens it.
-    // When enable_thinking=false, the template inserts closed
-    // `<think>\n\n</think>\n\n` and the model generates no thinking tokens —
-    // no need for scheduler tracking.
     let scheduler_thinking = enable_thinking;
     let request = InferenceRequest::Streaming {
         request_id: request_id.as_str().to_string(),
@@ -146,27 +137,44 @@ pub(crate) async fn chat_completions_stream(
     let role_chunk = ChatCompletionChunk::role_chunk(&model_name, &chunk_id);
     let role_json = serde_json::to_string(&role_chunk).unwrap_or_default();
 
-    let ctx = StreamCtx {
+    let stream_ctx = StreamCtx {
         state: state.clone(),
-        model: model_name.clone(),
-        id: chunk_id.clone(),
-        prompt_len,
-        enable_thinking,
-        tool_defs_for_backfill: tool_defs,
-        cwd_for_normalize: cwd_hint,
-        stop_strings,
-        req_stream_include_usage,
-        req_ctx,
-        dump_seq,
-        request_id,
+        req_ctx: req_ctx.clone(),
     };
 
-    let mut stream_state = StreamState::new(tools_active, enable_thinking);
+    // Stepper owns the decoder / scanner / detector / stop predicate.
+    let tokenizer = extend_tokenizer_lifetime(&state.tokenizer);
+    let stepper_cfg = StepperConfig {
+        enable_thinking,
+        tools_active,
+        stop_strings,
+        reasoning_parser: state.reasoning_parser.as_deref().map(|p| {
+            // Same lifetime extension trick as the tokenizer — the
+            // adapter and stepper outlive the parser borrow because
+            // `Arc<AppState>` is held by the flat_map closure.
+            unsafe { std::mem::transmute::<&dyn crate::reasoning_parser::ReasoningParser, &'static dyn crate::reasoning_parser::ReasoningParser>(p) }
+        }),
+    };
+    let mut stepper = Stepper::new(tokenizer, stepper_cfg);
+
+    let mut adapter = StreamingAdapter::new(
+        state.clone(),
+        model_name.clone(),
+        chunk_id.clone(),
+        request_id,
+        dump_seq,
+        req_stream_include_usage,
+        req_ctx,
+        prompt_len,
+    );
 
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
-        let events = match event {
+        let mut sse_events: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
+        match event {
             StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
-                handle_token::handle_token(&mut stream_state, &ctx, tok)
+                for ev in stepper.step_token(tok) {
+                    adapter.translate(ev, &mut sse_events);
+                }
             }
             StreamEvent::Done {
                 finish_reason,
@@ -178,21 +186,25 @@ pub(crate) async fn chat_completions_stream(
                 cached_prompt_tokens,
                 accepted_prediction_tokens,
                 rejected_prediction_tokens,
-            } => handle_done::handle_done(
-                &mut stream_state,
-                &ctx,
-                finish_reason,
-                completion_tokens,
-                time_to_first_token_ms,
-                decode_time_ms,
-                reasoning_tokens,
-                cached_prompt_tokens,
-                accepted_prediction_tokens,
-                rejected_prediction_tokens,
-            ),
-            StreamEvent::Error(msg) => handle_error::handle_error(&ctx, msg),
-        };
-        futures::stream::iter(events)
+            } => {
+                adapter.set_usage_inputs(UsageInputs {
+                    completion_tokens,
+                    time_to_first_token_ms,
+                    decode_time_ms,
+                    reasoning_tokens,
+                    cached_prompt_tokens,
+                    accepted_prediction_tokens,
+                    rejected_prediction_tokens,
+                });
+                for ev in stepper.flush(finish_reason) {
+                    adapter.translate(ev, &mut sse_events);
+                }
+            }
+            StreamEvent::Error(msg) => {
+                sse_events.extend(handle_error::handle_error(&stream_ctx, msg));
+            }
+        }
+        futures::stream::iter(sse_events)
     });
 
     // Prepend role chunk, append [DONE] sentinel

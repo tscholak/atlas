@@ -1,28 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Read-only context shared by every `StreamEvent` arm. Owned by the
-// `flat_map` closure so the per-event handlers can borrow it
-// immutably alongside `&mut StreamState`.
+// Read-only context shared by the streaming `flat_map` closure. The
+// adapter (see `adapter.rs`) owns the bulk of this; `ctx` survives
+// only for the error-arm path (`handle_error.rs`), which needs the
+// app state for the rate-limit refund.
 
 use std::sync::Arc;
 
 use crate::AppState;
-use crate::tool_parser;
 
 pub(super) struct StreamCtx {
     pub(super) state: Arc<AppState>,
-    pub(super) model: String,
-    pub(super) id: String,
-    pub(super) prompt_len: usize,
-    pub(super) enable_thinking: bool,
-    pub(super) tool_defs_for_backfill: Vec<tool_parser::ToolDefinition>,
-    pub(super) cwd_for_normalize: Option<String>,
-    pub(super) stop_strings: Vec<String>,
-    pub(super) req_stream_include_usage: bool,
     pub(super) req_ctx: Option<crate::rate_limiter::RequestContext>,
-    pub(super) dump_seq: Option<u64>,
-    /// Per-request identifier (Phase D) so the synthesized response
-    /// dump entry at stream completion can carry the same
-    /// `request_id` as the matching request dump entry.
-    pub(super) request_id: crate::request_id::RequestId,
 }
