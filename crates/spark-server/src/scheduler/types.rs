@@ -145,7 +145,7 @@ pub(super) struct ActiveSeq {
     /// True between emission of `<tool_call>`/`<function=…>` (open) and
     /// `</tool_call>`/`</function>` (close).
     pub inside_tool_body: bool,
-    /// F60 (2026-04-27): when true, MTP speculative decoding is bypassed.
+    /// When true, MTP speculative decoding is bypassed for this sequence.
     pub disable_mtp: bool,
     /// True after the first non-thinking content token has been generated.
     pub content_started: bool,
