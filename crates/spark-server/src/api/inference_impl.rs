@@ -211,17 +211,6 @@ impl InferenceRequest {
         }
     }
 
-    /// Whether a tool call is required for this request.
-    pub fn require_tool_call(&self) -> bool {
-        match self {
-            InferenceRequest::Blocking {
-                require_tool_call, ..
-            } => *require_tool_call,
-            InferenceRequest::Streaming {
-                require_tool_call, ..
-            } => *require_tool_call,
-        }
-    }
 
     /// F60 (2026-04-27): whether MTP speculative decoding should be
     /// disabled for this request (set when tools are active and the

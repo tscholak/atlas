@@ -13,13 +13,6 @@ use super::*;
 /// When `logprobs` is Some, the logprobs data is accumulated for blocking
 /// responses and sent via `StreamEvent::TokenWithLogprobs` for streaming.
 pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::TokenLogprobs>) {
-    // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.
-    // Guard with !inside_thinking — tool calls inside thinking are spurious.
-    if a.require_tool_call && a.tool_call_start_token == Some(tok) && !a.inside_thinking {
-        a.require_tool_call = false;
-        a.tool_call_opened = true;
-    }
-
     // Track CURRENT tool-body phase (P3.1, 2026-04-25). Set on the
     // open token, clear on the close. The flag drives sampler
     // scoping: when true, the main decode path zeroes
@@ -58,8 +51,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             a.inside_thinking = false;
             a.force_end_thinking = false;
             a.think_ended = true;
-            // One-shot for the next decode step: pin to
-            // tool_call_start_token if require_tool_call (Change 3b).
+            // One-shot for the next decode step.
             a.think_just_ended = true;
             tracing::info!(
                 "Thinking ended after {} tokens (budget={:?})",
@@ -83,22 +75,23 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         a.think_just_ended = false;
     }
 
-    // EOS handling: grammar-based, legacy, or min_tokens suppression.
+    // EOS handling: grammar-based + min_tokens. See decode_logits_step.rs
+    // for the rationale on which posthoc patches were removed in Stage 5.2.
     let grammar_suppresses_eos = a
         .grammar_state
         .as_ref()
         .is_some_and(|gs| !gs.is_terminated());
-    let legacy_suppresses_eos = a.require_tool_call;
     let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
-    let suppress_eos = grammar_suppresses_eos || legacy_suppresses_eos || min_tokens_suppresses;
+    let suppress_eos = grammar_suppresses_eos || min_tokens_suppresses;
 
     if a.eos_tokens.contains(&tok) && !suppress_eos {
         a.finished = true;
         return;
     }
     if a.eos_tokens.contains(&tok) && suppress_eos {
-        // EOS suppressed: grammar not terminated, legacy tool call not yet seen,
-        // or min_tokens not reached. Don't stop — let the model continue generating.
+        // EOS suppressed: grammar not at terminating state, or
+        // min_tokens not reached. Don't stop — let the model continue
+        // generating.
         return;
     }
     // OPENCODE FIX: see process_decode_logits — same gate. Suppress streaming

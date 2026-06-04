@@ -139,29 +139,12 @@ pub fn process_seq_logits(
     }
 
     // Change 3b: one-shot pin-to-tool-call-start.
-    // When the previous token was `</think>` AND the request
-    // requires a tool call AND no tool-call has been opened yet,
-    // mask all logits to -inf except `tool_call_start_token`.
-    // This prevents architectures like MiniMax M2 (which always
-    // thinks via the chat template) from wandering into prose
-    // after `</think>` instead of emitting the structured tool
-    // call. Models that don't have `require_tool_call` set
-    // (i.e. the request didn't pass tools) skip this entirely.
-    if a.think_just_ended
-        && a.require_tool_call
-        && !a.tool_call_opened
-        && !a.inside_thinking
-        && let Some(start_tok) = tool_call_start_token
-    {
-        let idx = start_tok as usize;
-        if idx < f32_logits.len() {
-            for logit in f32_logits.iter_mut() {
-                *logit = f32::NEG_INFINITY;
-            }
-            f32_logits[idx] = 0.0;
-            tracing::debug!("Forced tool_call_start_token after </think> (require_tool_call set)");
-        }
-    }
+    // (Stage 5.2) The post-`</think>` tool-call forcing block was
+    // removed alongside `require_tool_call`. xgrammar's structural
+    // tag with `at_least_one=true` is now the principled mechanism
+    // for `tool_choice: required`: it forbids EOS until a tool-call
+    // tag fires. The model-quality "wander after </think>" symptom
+    // surfaces as visible output instead of being papered over.
 
     // F70 (2026-04-29, attempted): canonical-opener anchor
     // bias was REVERTED. xgrammar's TagDispatch is non-anchored

@@ -108,8 +108,6 @@ pub enum InferenceRequest {
         enable_thinking: bool,
         /// Max thinking tokens before forcing `</think>`. None = unlimited.
         thinking_budget: Option<u32>,
-        /// Whether a tool call is required (tool_choice="required").
-        require_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
         /// sequence. Set when the request has tools active and the
         /// `ATLAS_DISABLE_MTP_FOR_TOOLS` env-gate is on (default true).
@@ -174,8 +172,6 @@ pub enum InferenceRequest {
         enable_thinking: bool,
         /// Max thinking tokens before forcing `</think>`. None = unlimited.
         thinking_budget: Option<u32>,
-        /// Whether a tool call is required (tool_choice="required").
-        require_tool_call: bool,
         /// F60 (2026-04-27): disable MTP speculative decoding for this
         /// sequence. Set when the request has tools active and the
         /// `ATLAS_DISABLE_MTP_FOR_TOOLS` env-gate is on (default true).

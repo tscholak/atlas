@@ -138,7 +138,7 @@ pub(crate) fn resolve_tokenizer_runtime(
     } else {
         tracing::warn!(
             "Tool call start token unresolved for {tc_start_str} — \
-             require_tool_call / suppress / force-emit-after-think will be no-ops"
+             inside-tool-body sampler scoping will be a no-op"
         );
     }
     let tool_call_end_token = tokenizer

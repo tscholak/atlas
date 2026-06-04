@@ -198,8 +198,7 @@ pub fn process_decode_logits(
             a.content_tokens = a.content_tokens.saturating_add(1);
             // think_just_ended is a one-shot: it was set when the prior
             // token was `</think>`; clear it now that we've emitted the
-            // first content token (which Change 3b's mask pinned to
-            // tool_call_start_token when require_tool_call was set).
+            // first content token.
             a.think_just_ended = false;
 
             // F2 (2026-04-26): bounded inter-tool prose budget.
@@ -223,28 +222,11 @@ pub fn process_decode_logits(
             }
         }
 
-        // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.
-        // Guard with !inside_thinking — a <tool_call> inside thinking is spurious
-        // and must not clear require_tool_call (which would allow premature EOS).
-        if a.require_tool_call && tool_call_start_token == Some(tok) && !a.inside_thinking {
-            a.require_tool_call = false;
-            a.tool_call_opened = true;
-        }
-        // F2 (2026-04-26): reset the inter-tool prose budget on
-        // every `<tool_call>` open. This keeps the budget scoped to
-        // "free-text since the last tool call started" rather than
-        // accumulating across the whole response.
+        // Track <tool_call> opener for the inside-tool-body phase
+        // (drives sampler scoping in emit_step.rs).
         if tool_call_start_token == Some(tok) && !a.inside_thinking {
+            a.tool_call_opened = true;
             a.prose_tokens_since_last_tool = 0;
-        }
-        // Safety: if require_tool_call is still set after 512 tokens, the model
-        // isn't generating a tool call (grammar may have failed to compile).
-        // Clear the flag so EOS is no longer suppressed — prevents infinite gen.
-        if a.require_tool_call && a.output_tokens.len() > 512 {
-            tracing::warn!(
-                "require_tool_call safety: no <tool_call> after 512 tokens, clearing EOS suppression"
-            );
-            a.require_tool_call = false;
         }
 
         // Accumulate logprobs data for blocking responses.
@@ -312,43 +294,20 @@ pub fn process_decode_logits(
             continue;
         }
 
-        // EOS handling: grammar-based, legacy, or min_tokens.
-        // Grammar-based: grammar controls when EOS is allowed (is_terminated()).
-        // Legacy: require_tool_call suppresses EOS until <tool_call> is seen.
-        // min_tokens: suppress EOS until output_tokens.len() >= min_tokens.
+        // EOS handling — two principled mechanisms only:
+        //   * Grammar: when xgrammar's NPDA isn't at a terminating
+        //     state, the EOS token cannot satisfy the grammar.
+        //   * min_tokens: OpenAI-spec request parameter; suppress EOS
+        //     until output_tokens.len() >= min_tokens.
+        // Posthoc quality patches (thinking_suppresses_eos,
+        // post_think_suppresses_eos, legacy_suppresses_eos via the
+        // deleted require_tool_call) have been removed per Stage 5.2.
         let grammar_suppresses_eos = a
             .grammar_state
             .as_ref()
             .is_some_and(|gs| !gs.is_terminated());
-        let legacy_suppresses_eos = a.require_tool_call;
         let min_tokens_suppresses = a.output_tokens.len() < a.min_tokens;
-        // Suppress EOS during thinking: <|im_end|> inside <think> is spurious.
-        // Only </think> (think_end_token) should end the thinking phase.
-        let thinking_suppresses_eos = a.inside_thinking;
-        // Post-thinking EOS guard. Empirically (dump fix22b 2026-04-25
-        // ses_23b4781f7ffebc7UgkKWedTmjd seq=43): when the thinking-loop
-        // watchdog force-closes `</think>` mid-narration, the model can
-        // emerge into content mode briefly (often emitting a bare
-        // `<write>\n\n` opener) and immediately sample EOS — the
-        // session ends with a partial tool-call shell but no real
-        // call. We require at least POST_THINK_MIN_CONTENT non-thinking
-        // tokens after `think_ended` before EOS is allowed, giving the
-        // model the room to actually open a `<tool_call>` block. Same
-        // shape as the existing `min_tokens` guard, but counted from
-        // the `</think>` boundary so it doesn't penalise turns that
-        // never entered thinking. 16 tokens is enough to start
-        // `<tool_call>\n<function=NAME>\n<parameter=…` and is well
-        // below typical real tool-call output sizes (>100 tokens).
-        const POST_THINK_MIN_CONTENT: u32 = 16;
-        let post_think_content_tokens =
-            (a.output_tokens.len() as u32).saturating_sub(a.thinking_tokens);
-        let post_think_suppresses_eos =
-            a.think_ended && post_think_content_tokens < POST_THINK_MIN_CONTENT;
-        let suppress_eos = grammar_suppresses_eos
-            || legacy_suppresses_eos
-            || min_tokens_suppresses
-            || thinking_suppresses_eos
-            || post_think_suppresses_eos;
+        let suppress_eos = grammar_suppresses_eos || min_tokens_suppresses;
 
         if a.eos_tokens.contains(&tok) && !suppress_eos {
             // Stop/EOS token: do NOT stream to client (OpenAI spec: returned text

@@ -50,7 +50,6 @@ pub fn start_chunked_prefill(
     if req_enable_thinking {
         tracing::info!("Thinking enabled, budget={:?}", req_thinking_budget);
     }
-    let req_require_tool_call = req.require_tool_call();
     let req_disable_mtp = req.disable_mtp();
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
@@ -201,10 +200,6 @@ pub fn start_chunked_prefill(
             tracing::warn!("prefill_a_step: first-token send failed (receiver dropped): {e}");
         }
 
-        // When grammar is active, disable legacy require_tool_call (grammar handles EOS).
-        let use_legacy_tool_call =
-            req_require_tool_call && grammar_state.is_none() && tool_call_start_token.is_some();
-
         let now = Instant::now();
         let cached_prompt_tok = seq.cached_prefix_tokens as u32;
         if eos_tokens.contains(&first) || max_tokens <= 1 {
@@ -248,7 +243,6 @@ pub fn start_chunked_prefill(
                 think_start_token,
                 think_ended: !req_enable_thinking && think_end_token.is_some(),
                 think_just_ended: false,
-                require_tool_call: use_legacy_tool_call,
                 tool_call_start_token,
                 tool_call_opened: false,
                 inside_tool_body: false,
@@ -314,7 +308,6 @@ pub fn start_chunked_prefill(
                 think_start_token,
                 think_ended: !req_enable_thinking && think_end_token.is_some(),
                 think_just_ended: false,
-                require_tool_call: use_legacy_tool_call,
                 tool_call_start_token,
                 tool_call_opened: false,
                 inside_tool_body: false,
@@ -370,7 +363,6 @@ pub fn start_chunked_prefill(
             logit_bias,
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
-            require_tool_call: req_require_tool_call,
             disable_mtp: req_disable_mtp,
             grammar_state,
             seed: req_seed,

@@ -48,7 +48,6 @@ pub fn prefill_request(
     if req_enable_thinking {
         tracing::info!("Thinking enabled, budget={:?}", req_thinking_budget);
     }
-    let req_require_tool_call = req.require_tool_call();
     let req_disable_mtp = req.disable_mtp();
     let req_seed = req.seed();
     let req_top_logprobs = req.top_logprobs();
@@ -151,10 +150,6 @@ pub fn prefill_request(
 
     let output_tokens = vec![first];
 
-    // When grammar is active, disable legacy require_tool_call (grammar handles EOS).
-    let use_legacy_tool_call =
-        req_require_tool_call && grammar_state.is_none() && tool_call_start_token.is_some();
-
     let now = Instant::now();
     let cached_prompt_tok = seq.cached_prefix_tokens as u32;
 
@@ -199,7 +194,6 @@ pub fn prefill_request(
             think_start_token,
             think_ended: !req_enable_thinking && think_end_token.is_some(),
             think_just_ended: false,
-            require_tool_call: use_legacy_tool_call,
             disable_mtp: req_disable_mtp,
             content_started: false,
             content_tokens: 0,
@@ -266,7 +260,6 @@ pub fn prefill_request(
         think_start_token,
         think_ended: !req_enable_thinking && think_end_token.is_some(),
         think_just_ended: false,
-        require_tool_call: use_legacy_tool_call,
         disable_mtp: req_disable_mtp,
         content_started: false,
         content_tokens: 0,

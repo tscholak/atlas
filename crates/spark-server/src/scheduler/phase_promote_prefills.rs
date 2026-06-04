@@ -46,8 +46,6 @@ pub(super) fn promote_completed_prefills(
                 "phase_promote_prefills: first-token send failed (receiver dropped): {e}"
             );
         }
-        let use_legacy_tool_call =
-            p.require_tool_call && p.grammar_state.is_none() && tool_call_start_token.is_some();
         let now = Instant::now();
         let cached_prompt_tok = p.seq.cached_prefix_tokens as u32;
         let immediate_finish = p.eos_tokens.contains(&first) || p.max_tokens <= 1;
@@ -55,7 +53,6 @@ pub(super) fn promote_completed_prefills(
         let mut a = build_active_seq_from_prefill(
             p,
             first,
-            use_legacy_tool_call,
             cached_prompt_tok,
             immediate_finish,
             now,
@@ -80,7 +77,6 @@ pub(super) fn promote_completed_prefills(
 fn build_active_seq_from_prefill(
     p: PrefillInProgress,
     first: u32,
-    use_legacy_tool_call: bool,
     cached_prompt_tok: u32,
     immediate_finish: bool,
     now: Instant,
@@ -137,7 +133,6 @@ fn build_active_seq_from_prefill(
         // sequence starts in the post-think content phase.
         think_ended: !p.enable_thinking && think_end_token.is_some(),
         think_just_ended: false,
-        require_tool_call: use_legacy_tool_call,
         tool_call_start_token,
         tool_call_opened: false,
         inside_tool_body: false,

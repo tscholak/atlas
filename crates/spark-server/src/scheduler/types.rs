@@ -60,7 +60,6 @@ pub(super) struct PrefillInProgress {
     pub logit_bias: Vec<(u32, f32)>,
     pub enable_thinking: bool,
     pub thinking_budget: Option<u32>,
-    pub require_tool_call: bool,
     /// Per-request MTP-disable flag (propagated to ActiveSeq).
     pub disable_mtp: bool,
     pub grammar_state: Option<GrammarState>,
@@ -135,10 +134,7 @@ pub(super) struct ActiveSeq {
     pub think_just_ended: bool,
     /// Token ID for `</tool_call>` — acts as a stop token for one-call-per-response.
     pub tool_call_end_token: Option<u32>,
-    /// When true AND grammar_state is None, EOS tokens are suppressed until
-    /// `<tool_call>` is generated (legacy fallback).
-    pub require_tool_call: bool,
-    /// Token ID for `<tool_call>` (legacy fallback when grammar is unavailable).
+    /// Token ID for `<tool_call>`.
     pub tool_call_start_token: Option<u32>,
     /// True after `<tool_call>` generated in output (not inside thinking).
     pub tool_call_opened: bool,
@@ -229,7 +225,6 @@ pub(super) struct SwappedSeq {
     pub think_start_token: Option<u32>,
     pub think_ended: bool,
     pub think_just_ended: bool,
-    pub require_tool_call: bool,
     /// MTP-disable flag preserved across snapshot/restore.
     pub disable_mtp: bool,
     pub content_started: bool,
