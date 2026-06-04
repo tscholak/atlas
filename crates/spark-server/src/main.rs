@@ -33,7 +33,6 @@ mod halluc_probe;
 mod hint_injector;
 mod llmlingua;
 mod lookback_lens;
-mod loop_detector;
 mod loop_simhash;
 mod lqer;
 mod main_modules;

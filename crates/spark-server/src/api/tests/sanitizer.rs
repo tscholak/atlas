@@ -391,11 +391,4 @@ mod sanitizer_tests {
     // `crate::tool_salvage::tests` and now exercise the generic
     // schema-driven extractor (header+body shape). See
     // `tool_salvage.rs` for coverage.
-    //
-    // Note: cross-turn prose-prefix Layer 4 was deleted along with
-    // its `normalise_text_prefix` helper; the unified loop detector
-    // in `crate::loop_detector` covers the same ground via shingle
-    // similarity over assistant text. See `loop_detector.rs` tests
-    // (`three_identical_intros_fire_loop`,
-    // `slightly_varied_intros_still_fire`).
 }
