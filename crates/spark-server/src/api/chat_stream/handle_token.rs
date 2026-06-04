@@ -13,7 +13,6 @@ use axum::response::sse::Event;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::super::failures::{check_loop_watchdog, flush_content_sanitizer};
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::{StreamPhase, StreamState};
@@ -194,7 +193,7 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
                     handle_tool_call_delta(state, ctx, args, idx, &mut sse_events);
                 }
                 tool_parser::DetectorOutput::ToolCallEnd { idx } => {
-                    handle_tool_call_end(state, ctx, idx);
+                    handle_tool_call_end(state, idx);
                 }
             }
         }
@@ -266,27 +265,6 @@ fn thinking_step(
             if ctx.enable_thinking {
                 if !final_reasoning.is_empty() {
                     emit_reasoning_sse(sse_events, state, ctx, &final_reasoning);
-                }
-                // Flush the reasoning sanitizer's tail-hold buffer at
-                // the Thinking→Content boundary. `emit_reasoning_sse`
-                // routes through `sanitize_content_chunk`, which
-                // retains up to `tag_max-1` trailing bytes pending
-                // leak-marker fuse on the next chunk — but there is
-                // no next thinking chunk after the transition, so
-                // without this flush every thinking block silently
-                // loses its tail.
-                let tail = flush_content_sanitizer(
-                    &mut state.reasoning_tag_scan_buf,
-                    &mut state.reasoning_suppressing_leak,
-                    &ctx.leak_markers,
-                );
-                state.reasoning_inside_envelope = false;
-                if !tail.is_empty() {
-                    state.record_reasoning(&tail);
-                    let chunk =
-                        ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, tail);
-                    let json = serde_json::to_string(&chunk).unwrap_or_default();
-                    sse_events.push(Ok(Event::default().data(json)));
                 }
             }
             state.enter_content();
@@ -382,19 +360,11 @@ fn process_detector_content(
         false
     };
 
-    let token_trip = check_loop_watchdog(
-        sanitized,
-        &mut state.loop_scan_buf,
-        state.loop_watchdog_triggered,
-    );
-
-    if semantic_trip || token_trip {
-        if semantic_trip {
-            tracing::warn!(
-                ring_len = state.simhash_guard.len(),
-                "SimHash semantic-loop watchdog fired (paraphrased sentence repeat)"
-            );
-        }
+    if semantic_trip {
+        tracing::warn!(
+            ring_len = state.simhash_guard.len(),
+            "SimHash semantic-loop watchdog fired (paraphrased sentence repeat)"
+        );
         state.loop_watchdog_triggered = true;
         state.mark_stopped();
         return Some(Vec::new());

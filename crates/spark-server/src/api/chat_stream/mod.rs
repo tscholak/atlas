@@ -37,7 +37,6 @@ use crate::AppState;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::failures::{F39FailureCache, f60_disable_mtp_for_request};
 use super::inference_types::{GrammarSpec, InferenceRequest, StreamEvent};
 
 use ctx::StreamCtx;
@@ -82,7 +81,6 @@ pub(crate) async fn chat_completions_stream(
     req_metadata: Option<std::collections::HashMap<String, String>>,
     req_ctx: Option<crate::rate_limiter::RequestContext>,
     dump_seq: Option<u64>,
-    f44_cache: F39FailureCache,
 ) -> Result<Response, (StatusCode, String)> {
     // service_tier + metadata are request echoes only; the chat-completion-
     // chunk schema doesn't carry them, but we surface them via the final
@@ -126,7 +124,7 @@ pub(crate) async fn chat_completions_stream(
         enable_thinking: scheduler_thinking,
         thinking_budget,
         require_tool_call: tool_choice_required,
-        disable_mtp: f60_disable_mtp_for_request(tools_active),
+        disable_mtp: false,
         grammar_spec,
         seed,
         top_logprobs,
@@ -158,23 +156,6 @@ pub(crate) async fn chat_completions_stream(
         .map(|p| p.leak_markers())
         .unwrap_or(tool_parser::LeakMarkers::EMPTY);
 
-    let max_tool_calls_per_response: usize = std::env::var("ATLAS_MAX_TOOL_CALLS_PER_RESPONSE")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(12);
-
-    // F44/F55: log cache state at stream entry.
-    let f44_cache_active =
-        !f44_cache.direct.is_empty() || !f44_cache.missing_bins_by_tool.is_empty();
-    if f44_cache_active {
-        tracing::info!(
-            direct_entries = f44_cache.direct.len(),
-            missing_bin_tools = f44_cache.missing_bins_by_tool.len(),
-            sample_direct = ?f44_cache.direct.keys().take(3).collect::<Vec<_>>(),
-            "F44/F55: streaming closure entered with non-empty failure cache"
-        );
-    }
-
     let ctx = StreamCtx {
         state: state.clone(),
         model: model_name.clone(),
@@ -185,13 +166,10 @@ pub(crate) async fn chat_completions_stream(
         cwd_for_normalize: cwd_hint,
         stop_strings,
         leak_markers,
-        max_tool_calls_per_response,
         req_stream_include_usage,
         req_ctx,
         dump_seq,
         request_id,
-        f44_cache,
-        f44_cache_active,
     };
 
     let mut stream_state = StreamState::new(tools_active, enable_thinking);

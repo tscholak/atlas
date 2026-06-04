@@ -10,9 +10,6 @@ use axum::response::sse::Event;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::super::failures::{
-    bump_f12_tool_call_count, f44_check_permanent_failure, flush_content_sanitizer,
-};
 use super::ctx::StreamCtx;
 use super::state::StreamState;
 
@@ -26,19 +23,6 @@ pub(super) fn handle_complete_tool_call(
     tc_idx: usize,
     sse_events: &mut SseVec,
 ) {
-    // Content → Tool boundary: flush sanitiser tail.
-    let pre_tool_tail = flush_content_sanitizer(
-        &mut state.tag_scan_buf,
-        &mut state.suppressing_param_leak,
-        &ctx.leak_markers,
-    );
-    if !pre_tool_tail.is_empty() {
-        state.record_content(&pre_tool_tail);
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
-    }
     if state
         .tool_arg_dedup
         .check(&tc.function.name, &tc.function.arguments)
@@ -64,15 +48,6 @@ pub(super) fn handle_complete_tool_call(
                 "Bug-2 name-run cap tripped (complete-call path): {run_len} successive `{}` tool calls; ending response",
                 tc.function.name
             );
-            state.mark_stopped();
-        }
-        let mut stop_local = state.is_stopped();
-        bump_f12_tool_call_count(
-            &mut state.tool_calls_emitted_count,
-            ctx.max_tool_calls_per_response,
-            &mut stop_local,
-        );
-        if stop_local {
             state.mark_stopped();
         }
         // Successful complete-call path — log + metric to match the
@@ -111,18 +86,6 @@ pub(super) fn handle_tool_call_start(
     idx: usize,
     sse_events: &mut SseVec,
 ) {
-    let pre_tool_tail = flush_content_sanitizer(
-        &mut state.tag_scan_buf,
-        &mut state.suppressing_param_leak,
-        &ctx.leak_markers,
-    );
-    if !pre_tool_tail.is_empty() {
-        state.record_content(&pre_tool_tail);
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, pre_tool_tail);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
-    }
     state.streaming_tool_args.insert(
         idx,
         super::state::StreamingToolCall {
@@ -139,15 +102,6 @@ pub(super) fn handle_tool_call_start(
             arguments: String::new(),
         },
     };
-    let mut stop_local = state.is_stopped();
-    bump_f12_tool_call_count(
-        &mut state.tool_calls_emitted_count,
-        ctx.max_tool_calls_per_response,
-        &mut stop_local,
-    );
-    if stop_local {
-        state.mark_stopped();
-    }
     let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, &tc, idx);
     sse_events.push(Ok(
         Event::default().data(serde_json::to_string(&start).unwrap_or_default())
@@ -204,7 +158,7 @@ pub(super) fn handle_tool_call_delta(
 /// strictly tighter than F11 and F12 for the runaway pattern.
 const MAX_CONSEC_SAME_NAME_CALLS: u32 = 6;
 
-pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx: usize) {
+pub(super) fn handle_tool_call_end(state: &mut StreamState, idx: usize) {
     if let Some(super::state::StreamingToolCall {
         id,
         name,
@@ -229,14 +183,6 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, ctx: &StreamCtx, idx
             tracing::warn!(
                 tool = %name,
                 "F11 within-response dedup tripped: 2+ identical streaming tool calls; ending response"
-            );
-            state.mark_stopped();
-        } else if ctx.f44_cache_active
-            && f44_check_permanent_failure(&ctx.f44_cache, &name, &args_json)
-        {
-            tracing::warn!(
-                tool = %name,
-                "F44 streaming circuit-breaker tripped: tool_call matches a permanently-failed prior call; ending response"
             );
             state.mark_stopped();
         }

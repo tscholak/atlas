@@ -36,7 +36,6 @@ pub mod chat_stream_dispatch;
 pub mod compact;
 pub mod completions;
 pub mod conversations;
-pub mod failures;
 pub mod inference_impl;
 pub mod inference_types;
 pub mod misc_handlers;

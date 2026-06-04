@@ -8,7 +8,6 @@ use axum::response::sse::Event;
 use crate::openai::{ChatCompletionChunk, Usage};
 use crate::tool_parser;
 
-use super::super::failures::flush_content_sanitizer;
 use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::StreamState;
@@ -71,7 +70,7 @@ pub(super) fn handle_done(
                     handle_tool_call_delta(state, ctx, args, idx, &mut sse_events);
                 }
                 tool_parser::DetectorOutput::ToolCallEnd { idx } => {
-                    handle_tool_call_end(state, ctx, idx);
+                    handle_tool_call_end(state, idx);
                 }
             }
         }
@@ -102,39 +101,6 @@ pub(super) fn handle_done(
                 ));
             }
         }
-    }
-
-    // ── Reasoning sanitizer tail flush ──────────────────────────────
-    // Mirror of the content-sanitizer flush below. Covers EOS during
-    // the Thinking phase (e.g. max_tokens hit before `</think>` arrives)
-    // and is a no-op once the Thinking→Content transition flush has
-    // already drained the reasoning buffer.
-    let reasoning_tail = flush_content_sanitizer(
-        &mut state.reasoning_tag_scan_buf,
-        &mut state.reasoning_suppressing_leak,
-        &ctx.leak_markers,
-    );
-    if !reasoning_tail.is_empty() {
-        state.record_reasoning(&reasoning_tail);
-        let chunk =
-            ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, reasoning_tail);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
-    }
-
-    // ── Sanitizer tail flush ────────────────────────────────────────
-    let tail = flush_content_sanitizer(
-        &mut state.tag_scan_buf,
-        &mut state.suppressing_param_leak,
-        &ctx.leak_markers,
-    );
-    if !tail.is_empty() {
-        state.record_content(&tail);
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, tail);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
     }
 
     // ── Usage block ─────────────────────────────────────────────────
