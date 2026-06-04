@@ -18,7 +18,7 @@ mod state;
 mod tests;
 
 pub use engine::{GrammarEngine, GrammarError};
-pub use schema::augment_schema_with_tafc_think;
+pub use schema::{SchemaReason, ToolSchemaError, augment_schema_with_tafc_think, validate_tools_for_grammar};
 pub use state::GrammarState;
 
 /// Extract an ordered vocabulary from a HuggingFace tokenizer.

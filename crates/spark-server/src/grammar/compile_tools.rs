@@ -9,7 +9,7 @@ use xgrammar::CompiledGrammar;
 use crate::tool_parser::ToolDefinition;
 
 use super::engine::{GrammarEngine, GrammarError};
-use super::schema::{enforce_min_length_on_required_strings, sanitize_schema_for_grammar};
+use super::schema::{compile_schema_strict, enforce_min_length_on_required_strings};
 
 impl GrammarEngine {
     // ── Tool call grammars ──
@@ -44,13 +44,11 @@ impl GrammarEngine {
                 .as_ref()
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
-            let raw_schema = match sanitize_schema_for_grammar(&raw_schema) {
-                Some(s) => s,
-                None => {
-                    tracing::warn!("Skipping tool '{name}' in grammar — schema unsanitizable");
-                    continue;
-                }
-            };
+            let raw_schema = compile_schema_strict(&raw_schema).map_err(|e| {
+                GrammarError::InvalidSchema(format!(
+                    "tool '{name}' at '{}': {}", e.path, e.reason
+                ))
+            })?;
             if raw_schema.get("properties").is_none() && raw_schema.get("type").is_none() {
                 tracing::warn!(
                     "Skipping tool '{name}' in grammar — schema has no properties or type"
@@ -116,13 +114,11 @@ impl GrammarEngine {
                 .as_ref()
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
-            let raw_schema = match sanitize_schema_for_grammar(&raw_schema) {
-                Some(s) => s,
-                None => {
-                    tracing::warn!("Skipping tool '{name}' in grammar — schema unsanitizable");
-                    continue;
-                }
-            };
+            let raw_schema = compile_schema_strict(&raw_schema).map_err(|e| {
+                GrammarError::InvalidSchema(format!(
+                    "tool '{name}' at '{}': {}", e.path, e.reason
+                ))
+            })?;
             if raw_schema.get("properties").is_none() && raw_schema.get("type").is_none() {
                 tracing::warn!(
                     "Skipping tool '{name}' in grammar — schema has no properties or type"
@@ -188,13 +184,11 @@ impl GrammarEngine {
                 .as_ref()
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
-            let raw_schema = match sanitize_schema_for_grammar(&raw_schema) {
-                Some(s) => s,
-                None => {
-                    tracing::warn!("Skipping tool '{name}' in grammar — schema unsanitizable");
-                    continue;
-                }
-            };
+            let raw_schema = compile_schema_strict(&raw_schema).map_err(|e| {
+                GrammarError::InvalidSchema(format!(
+                    "tool '{name}' at '{}': {}", e.path, e.reason
+                ))
+            })?;
             if raw_schema.get("properties").is_none() && raw_schema.get("type").is_none() {
                 tracing::warn!(
                     "Skipping tool '{name}' in grammar — schema has no properties or type"
@@ -361,13 +355,11 @@ impl GrammarEngine {
                 .as_ref()
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
-            let raw_schema = match sanitize_schema_for_grammar(&raw_schema) {
-                Some(s) => s,
-                None => {
-                    tracing::warn!("Skipping tool '{name}' in grammar — schema unsanitizable");
-                    continue;
-                }
-            };
+            let raw_schema = compile_schema_strict(&raw_schema).map_err(|e| {
+                GrammarError::InvalidSchema(format!(
+                    "tool '{name}' at '{}': {}", e.path, e.reason
+                ))
+            })?;
             if raw_schema.get("properties").is_none() && raw_schema.get("type").is_none() {
                 tracing::warn!(
                     "Skipping tool '{name}' in grammar — schema has no properties or type"
@@ -463,10 +455,11 @@ impl GrammarEngine {
                 .as_ref()
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({"type":"object","properties":{}}));
-            if sanitize_schema_for_grammar(&raw_schema).is_none() {
-                tracing::warn!("Skipping tool '{name}' in grammar — schema unsanitizable");
-                continue;
-            }
+            compile_schema_strict(&raw_schema).map_err(|e| {
+                GrammarError::InvalidSchema(format!(
+                    "tool '{name}' at '{}': {}", e.path, e.reason
+                ))
+            })?;
 
             let begin = format!("<minimax:tool_call>\n<invoke name=\"{name}\">");
             let end = "</invoke>\n</minimax:tool_call>";

@@ -126,6 +126,28 @@ pub(crate) async fn chat_completions_inner(
         && req.tools.as_ref().is_some_and(|t| !t.is_empty())
         && !req.tool_choice.as_ref().is_some_and(|tc| tc.is_none());
 
+    // ── A2 strict-mode schema validation ──
+    // Walk every tool schema for xgrammar-unencodable patterns BEFORE
+    // dispatching to the scheduler. If any tool's schema cannot be
+    // compiled to EBNF without loosening, return HTTP 400 with the
+    // tool name + JSON Pointer + structural reason. Operators see the
+    // problem at deploy time, not runtime.
+    if tools_active
+        && let Some(ref tools) = req.tools
+        && let Err(errors) = crate::grammar::validate_tools_for_grammar(tools)
+    {
+        crate::metrics::REQUESTS_ACTIVE.dec();
+        let body = errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return super::compact::openai_error_response(
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("unencodable tool schema(s): {body}"),
+        );
+    }
+
     // Inject parser-specific behavioral system prompt when tools are active.
     // Each ToolCallParser defines guardrails (e.g. "emit <tool_call> immediately,
     // do not narrate") that the Jinja chat template alone does not enforce.
