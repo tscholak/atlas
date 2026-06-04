@@ -268,7 +268,7 @@ pub trait ReasoningParser: Send + Sync {
 // ── Concrete implementations ────────────────────────────────────────────────
 
 /// Qwen3.5 / Nemotron / DeepSeek-R1 reasoning format: `<think>...</think>`
-struct QwenReasoningParser;
+pub(crate) struct QwenReasoningParser;
 
 impl ReasoningParser for QwenReasoningParser {
     fn name(&self) -> &str {

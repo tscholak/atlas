@@ -55,7 +55,9 @@ pub(crate) struct ToolCallAcc {
 }
 
 pub struct Stepper {
-    decoder: StreamingDecoder<'static>,
+    /// `None` only in `#[cfg(test)]` paths that drive `feed_text`
+    /// directly without going through the tokenizer.
+    decoder: Option<StreamingDecoder<'static>>,
     phase: Phase,
     content_started: bool,
     thinking_scanner: Option<Box<dyn ThinkingScanner>>,
@@ -79,7 +81,18 @@ impl Stepper {
         // specials (`<|im_start|>`, `<|im_end|>`) are registered as
         // `eos_tokens` upstream and never appear in the stream.
         let decoder = tokenizer.streaming_decoder(false);
+        Self::from_parts(Some(decoder), cfg)
+    }
 
+    /// Test-only constructor that skips decoder construction. Tests
+    /// drive the FSM via `feed_text` with pre-decoded chunks; the
+    /// decoder is irrelevant to the FSM's semantic correctness.
+    #[cfg(test)]
+    pub(crate) fn for_tests(cfg: StepperConfig) -> Self {
+        Self::from_parts(None, cfg)
+    }
+
+    fn from_parts(decoder: Option<StreamingDecoder<'static>>, cfg: StepperConfig) -> Self {
         let (phase, thinking_scanner) =
             if cfg.enable_thinking && cfg.reasoning_parser.is_some() {
                 let scanner = cfg
@@ -125,7 +138,12 @@ impl Stepper {
         if self.stopped {
             return out;
         }
-        let chunk = match self.decoder.step(tok) {
+        let Some(decoder) = self.decoder.as_mut() else {
+            // `for_tests` skipped decoder construction; callers must
+            // drive via `feed_text` in that mode.
+            return out;
+        };
+        let chunk = match decoder.step(tok) {
             Ok(Some(s)) => s,
             Ok(None) => return out,
             Err(e) => {
@@ -133,6 +151,20 @@ impl Stepper {
                 return out;
             }
         };
+        self.feed_chunk(chunk, &mut out);
+        out
+    }
+
+    /// Test-only: feed a pre-decoded text chunk directly into the
+    /// FSM, bypassing the tokenizer. Used by the equivalence test
+    /// in `chat_fsm/tests.rs` to drive canonical text sequences
+    /// without spinning up a real `ChatTokenizer` fixture.
+    #[cfg(test)]
+    pub(crate) fn feed_text(&mut self, chunk: String) -> Vec<FsmEvent> {
+        let mut out = Vec::new();
+        if self.stopped || chunk.is_empty() {
+            return out;
+        }
         self.feed_chunk(chunk, &mut out);
         out
     }

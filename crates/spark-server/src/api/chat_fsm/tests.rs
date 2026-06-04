@@ -260,3 +260,306 @@ fn tool_call_helper_does_not_warn() {
     assert_eq!(t.id, "call_x");
     assert_eq!(t.function.name, "X");
 }
+
+// ─── §D3 streaming vs blocking byte-equivalence ───────────────────────
+//
+// Drive a single sequence of pre-decoded text chunks (simulating what
+// a Qwen-template-compliant model emits at decode time) through the
+// chat_fsm Stepper. Run the resulting FsmEvent stream through TWO
+// adapters:
+//   * "streaming" — apply each event to a ChoiceBuilder
+//   * "blocking"  — same event stream, second ChoiceBuilder
+// Assert both ChoiceBuilders produce byte-identical ChatChoice JSON.
+// This is the unification's correctness guarantee: ONE FSM, ONE
+// assembler, so the streaming roll-up MUST equal the blocking body.
+//
+// The chunk shapes here mirror what `tokenizer.streaming_decoder(false)`
+// would actually emit for a Qwen3 model: protocol markers (`</think>`,
+// `<tool_call>`) arrive as literal text because `skip_special_tokens
+// =false` keeps them un-rendered as IDs.
+
+use super::stepper::{Stepper, StepperConfig};
+use crate::reasoning_parser::QwenReasoningParser;
+
+/// Leak a QwenReasoningParser so the Stepper can hold a `'static`
+/// borrow during the test. Tests run for milliseconds; the leak is
+/// bounded and acceptable for fixtures.
+fn qwen_static() -> &'static dyn crate::reasoning_parser::ReasoningParser {
+    Box::leak(Box::new(QwenReasoningParser))
+        as &'static dyn crate::reasoning_parser::ReasoningParser
+}
+
+fn drive_stepper(cfg: StepperConfig, chunks: &[&str]) -> Vec<FsmEvent> {
+    let mut s = Stepper::for_tests(cfg);
+    let mut out = Vec::new();
+    for chunk in chunks {
+        out.extend(s.feed_text(chunk.to_string()));
+    }
+    out.extend(s.flush("stop".to_string()));
+    out
+}
+
+#[test]
+fn d3_streaming_blocking_qwen_thinking_then_content() {
+    // Canonical Qwen3 reasoning → content flow. The model first
+    // produces reasoning, emits the `</think>` end-tag, then a
+    // blank line, then the content. No tools active.
+    let cfg = StepperConfig {
+        enable_thinking: true,
+        tools_active: false,
+        stop_strings: vec![],
+        reasoning_parser: Some(qwen_static()),
+    };
+    let chunks = [
+        "The user said hi. ",
+        "I'll greet back.",
+        "</think>",
+        "\n\n",
+        "Hello",
+        "!",
+    ];
+
+    // ── First pass: capture the FsmEvent stream once ────────────────
+    let events = drive_stepper(
+        StepperConfig {
+            reasoning_parser: cfg.reasoning_parser,
+            ..StepperConfig {
+                enable_thinking: cfg.enable_thinking,
+                tools_active: cfg.tools_active,
+                stop_strings: cfg.stop_strings.clone(),
+                reasoning_parser: cfg.reasoning_parser,
+            }
+        },
+        &chunks,
+    );
+
+    // The ThinkingScanner holds back `end_tag.len() - 1` trailing
+    // bytes per chunk for straddle protection (`</think>` is 8 chars
+    // so hold = 7). Reasoning deltas therefore DO NOT match the input
+    // chunks verbatim — but their CONCATENATION must, because no byte
+    // is dropped or rewritten. Assert at the concatenation level.
+    let reasoning_concat: String = events
+        .iter()
+        .filter_map(|e| match e {
+            FsmEvent::ReasoningDelta(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    let content_concat: String = events
+        .iter()
+        .filter_map(|e| match e {
+            FsmEvent::ContentDelta(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    let stop_count = events
+        .iter()
+        .filter(|e| matches!(e, FsmEvent::Stopped { .. }))
+        .count();
+    assert_eq!(
+        reasoning_concat, "The user said hi. I'll greet back.",
+        "reasoning bytes must round-trip verbatim across deltas"
+    );
+    assert_eq!(
+        content_concat, "Hello!",
+        "content bytes must round-trip verbatim post-</think>+blank-line trim"
+    );
+    assert_eq!(stop_count, 1, "exactly one Stopped event per FSM lifetime");
+
+    // ── Second pass: build streaming + blocking ChoiceBuilders ──────
+    let mut streaming = ChoiceBuilder::new(0);
+    let mut blocking = ChoiceBuilder::new(0);
+    for ev in &events {
+        streaming.apply(ev.clone());
+        blocking.apply(ev.clone());
+    }
+    let streaming_choice = streaming.into_chat_choice(None);
+    let blocking_choice = blocking.into_chat_choice(None);
+
+    let streaming_json = serde_json::to_value(&streaming_choice).unwrap();
+    let blocking_json = serde_json::to_value(&blocking_choice).unwrap();
+    assert_eq!(
+        streaming_json, blocking_json,
+        "streaming roll-up must byte-match blocking response for the same FSM event stream"
+    );
+
+    // ── Final shape check ──────────────────────────────────────────
+    assert_eq!(streaming_choice.message.role, "assistant");
+    assert_eq!(
+        streaming_choice.message.reasoning_content.as_deref(),
+        Some("The user said hi. I'll greet back.")
+    );
+    assert_eq!(streaming_choice.message.content.as_deref(), Some("Hello!"));
+    assert!(streaming_choice.message.tool_calls.is_none());
+    assert_eq!(streaming_choice.finish_reason, "stop");
+}
+
+#[test]
+fn d3_streaming_blocking_qwen_thinking_then_tool_call() {
+    // Canonical Qwen3-coder tool-call flow: reasoning → `</think>` →
+    // newline → `<tool_call>` envelope with `<function=NAME>` +
+    // `<parameter=KEY>VALUE</parameter>` → `</tool_call>`. The
+    // StreamingToolDetector emits ToolCallStart on `<function=NAME>`
+    // and one ToolCallArgDelta at `</tool_call>` (the XML must close
+    // before it canonicalises to JSON).
+    let cfg = StepperConfig {
+        enable_thinking: true,
+        tools_active: true,
+        stop_strings: vec![],
+        reasoning_parser: Some(qwen_static()),
+    };
+    let chunks = [
+        "Need to write a file.",
+        "</think>",
+        "\n\n",
+        "<tool_call>\n",
+        "<function=Write>\n",
+        "<parameter=path>/tmp/a.txt</parameter>\n",
+        "<parameter=content>hi</parameter>\n",
+        "</function>\n",
+        "</tool_call>",
+    ];
+
+    let events = drive_stepper(
+        StepperConfig {
+            reasoning_parser: cfg.reasoning_parser,
+            enable_thinking: cfg.enable_thinking,
+            tools_active: cfg.tools_active,
+            stop_strings: cfg.stop_strings.clone(),
+        },
+        &chunks,
+    );
+
+    // Expected event sequence (order matters):
+    //   ReasoningDelta("Need to write a file.")
+    //   ToolCallStart { id: "call_XXXX", name: "Write", idx: 0 }
+    //   ToolCallArgDelta { args: "{...}", idx: 0 }
+    //   ToolCallEnd { idx: 0 }
+    //   Stopped { Upstream("stop") }
+    let tool_starts: Vec<&FsmEvent> = events
+        .iter()
+        .filter(|e| matches!(e, FsmEvent::ToolCallStart { .. }))
+        .collect();
+    let tool_ends: Vec<&FsmEvent> = events
+        .iter()
+        .filter(|e| matches!(e, FsmEvent::ToolCallEnd { .. }))
+        .collect();
+    assert_eq!(
+        tool_starts.len(),
+        1,
+        "exactly one ToolCallStart for a single-tool envelope"
+    );
+    assert_eq!(tool_ends.len(), 1, "exactly one ToolCallEnd");
+    if let FsmEvent::ToolCallStart { name, .. } = tool_starts[0] {
+        assert_eq!(name, "Write", "function name extracted from <function=NAME>");
+    }
+
+    // ── Streaming vs blocking equivalence ───────────────────────────
+    let mut streaming = ChoiceBuilder::new(0);
+    let mut blocking = ChoiceBuilder::new(0);
+    for ev in &events {
+        streaming.apply(ev.clone());
+        blocking.apply(ev.clone());
+    }
+    let streaming_choice = streaming.into_chat_choice(None);
+    let blocking_choice = blocking.into_chat_choice(None);
+    assert_eq!(
+        serde_json::to_value(&streaming_choice).unwrap(),
+        serde_json::to_value(&blocking_choice).unwrap(),
+        "tool-call flow streaming roll-up must byte-match blocking response"
+    );
+
+    // ── Final shape check ──────────────────────────────────────────
+    assert_eq!(
+        streaming_choice.message.reasoning_content.as_deref(),
+        Some("Need to write a file.")
+    );
+    // content empty + tool_calls present → content is None per §C7.
+    assert!(streaming_choice.message.content.is_none());
+    let calls = streaming_choice.message.tool_calls.as_ref().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].function.name, "Write");
+    let args: serde_json::Value =
+        serde_json::from_str(&calls[0].function.arguments).expect("args must be valid JSON");
+    assert_eq!(args["path"], "/tmp/a.txt");
+    assert_eq!(args["content"], "hi");
+    // Tool call fired → finish_reason promoted regardless of upstream.
+    assert_eq!(streaming_choice.finish_reason, "tool_calls");
+}
+
+#[test]
+fn d3_stop_string_in_tool_envelope_completes_call_first() {
+    // Deliberate correctness fix from §C11: a stop string appearing
+    // inside the `<tool_call>...</tool_call>` body must NOT terminate
+    // the FSM mid-envelope. The detector buffers the envelope; the
+    // tool call completes via Start/ArgDelta/End; THEN the stop fires
+    // on the next genuine Content delta if any.
+    let cfg = StepperConfig {
+        enable_thinking: false,
+        tools_active: true,
+        stop_strings: vec!["STOP".to_string()],
+        reasoning_parser: None,
+    };
+    let chunks = [
+        "<tool_call>\n",
+        "<function=Run>\n",
+        "<parameter=cmd>echo STOP</parameter>\n",
+        "</function>\n",
+        "</tool_call>",
+        "trailing STOP after envelope",
+    ];
+
+    let events = drive_stepper(cfg, &chunks);
+
+    // The tool call must complete before any Stopped fires. Find the
+    // index of ToolCallEnd and the index of Stopped; ToolCallEnd MUST
+    // come first.
+    let end_idx = events
+        .iter()
+        .position(|e| matches!(e, FsmEvent::ToolCallEnd { .. }))
+        .expect("tool call must complete before stop");
+    let stopped_idx = events
+        .iter()
+        .position(|e| matches!(e, FsmEvent::Stopped { .. }))
+        .expect("FSM must terminate");
+    assert!(
+        end_idx < stopped_idx,
+        "ToolCallEnd must precede Stopped — stop strings cannot bisect a structured tool call"
+    );
+
+    // The stop reason should be StopString (matched the trailing
+    // "STOP" in the post-envelope content), not Upstream.
+    if let FsmEvent::Stopped { reason } = &events[stopped_idx] {
+        match reason {
+            StopReason::StopString { matched } => assert_eq!(matched, "STOP"),
+            other => panic!("expected StopReason::StopString, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn d3_content_only_no_thinking_no_tools() {
+    // Simplest path: enable_thinking=false, no detector, no stops.
+    // The Stepper starts in Content phase; every chunk emits a
+    // ContentDelta verbatim.
+    let cfg = StepperConfig {
+        enable_thinking: false,
+        tools_active: false,
+        stop_strings: vec![],
+        reasoning_parser: None,
+    };
+    let chunks = ["Hello, ", "world", "!"];
+
+    let events = drive_stepper(cfg, &chunks);
+    let deltas: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            FsmEvent::ContentDelta(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(deltas, vec!["Hello, ", "world", "!"]);
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, FsmEvent::Stopped { reason: StopReason::Upstream(s) } if s == "stop")));
+}
