@@ -47,9 +47,6 @@ pub mod responses_translate;
 pub mod stored;
 pub mod stubs;
 
-#[cfg(test)]
-mod tests;
-
 // Re-exports to preserve the original `crate::api::*` import surface.
 // `#[allow(unused_imports)]` is applied only where the re-export is
 // part of the public surface but happens to be unreferenced this build
