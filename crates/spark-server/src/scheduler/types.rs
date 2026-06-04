@@ -60,13 +60,6 @@ pub(super) struct PrefillInProgress {
     pub logit_bias: Vec<(u32, f32)>,
     pub enable_thinking: bool,
     pub thinking_budget: Option<u32>,
-    /// Per-server spontaneous-thinking budget (from MODEL.toml
-    /// `[behavior].max_thinking_budget`). When the model emits a
-    /// `<think>` token without the request having explicitly enabled
-    /// thinking, this caps how many thinking tokens it can produce
-    /// before `</think>` is force-emitted. Replaces a previous
-    /// hard-coded 512-token fallback.
-    pub spontaneous_think_budget: u32,
     pub require_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag (propagated to ActiveSeq).
     pub disable_mtp: bool,
@@ -126,9 +119,6 @@ pub(super) struct ActiveSeq {
     pub enable_thinking: bool,
     /// Max thinking tokens before forcing `</think>`. None = unlimited.
     pub thinking_budget: Option<u32>,
-    /// Per-server spontaneous-thinking budget (from MODEL.toml
-    /// `[behavior].max_thinking_budget`).
-    pub spontaneous_think_budget: u32,
     /// Number of thinking tokens generated so far (counted while inside_thinking).
     pub thinking_tokens: u32,
     /// When true, the next decode step must produce the `</think>` token.
@@ -143,8 +133,6 @@ pub(super) struct ActiveSeq {
     pub think_ended: bool,
     /// One-shot signal: set when `</think>` was the most recently emitted token.
     pub think_just_ended: bool,
-    /// Consecutive `</think>` tokens skipped outside thinking. Safety limit: 50.
-    pub think_skip_count: u32,
     /// Token ID for `</tool_call>` — acts as a stop token for one-call-per-response.
     pub tool_call_end_token: Option<u32>,
     /// When true AND grammar_state is None, EOS tokens are suppressed until
@@ -165,8 +153,6 @@ pub(super) struct ActiveSeq {
     pub content_tokens: u32,
     /// Free-text tokens emitted since the last `<tool_call>` opened.
     pub prose_tokens_since_last_tool: u32,
-    /// F10 (2026-04-26): how many times the thinking-loop watchdog has fired.
-    pub think_watchdog_fires: u32,
     /// F26 (2026-04-26): consecutive sample steps with collapsed entropy.
     pub entropy_collapse_streak: u32,
     /// F27 (2026-04-26): ring buffer of recent logit-distribution fingerprints.
@@ -236,7 +222,6 @@ pub(super) struct SwappedSeq {
     pub inside_thinking: bool,
     pub enable_thinking: bool,
     pub thinking_budget: Option<u32>,
-    pub spontaneous_think_budget: u32,
     pub thinking_tokens: u32,
     pub force_end_thinking: bool,
     pub consecutive_confident: u32,
@@ -244,14 +229,12 @@ pub(super) struct SwappedSeq {
     pub think_start_token: Option<u32>,
     pub think_ended: bool,
     pub think_just_ended: bool,
-    pub think_skip_count: u32,
     pub require_tool_call: bool,
     /// F60 (2026-04-27): MTP-disable flag preserved across snapshot/restore.
     pub disable_mtp: bool,
     pub content_started: bool,
     pub content_tokens: u32,
     pub prose_tokens_since_last_tool: u32,
-    pub think_watchdog_fires: u32,
     pub entropy_collapse_streak: u32,
     pub f27_fingerprint_ring: std::collections::VecDeque<u64>,
     pub f27_attractor_streak: u32,

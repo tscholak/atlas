@@ -17,7 +17,6 @@ pub fn start_chunked_prefill(
     prefill_stream: u64,
     prefill_event: u64,
     grammar_engine: &mut Option<GrammarEngine>,
-    spontaneous_think_budget: u32,
 ) -> Result<StartPrefillResult> {
     // Merge user-supplied stop tokens with model EOS tokens.
     let stop_tokens = req.take_stop_tokens();
@@ -196,9 +195,7 @@ pub fn start_chunked_prefill(
             }
         };
 
-        let spontaneous_think = !req_enable_thinking && think_start_token == Some(first);
-        if !spontaneous_think
-            && let ResponseSink::Streaming(ref tx) = sink
+        if let ResponseSink::Streaming(ref tx) = sink
             && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
         {
             tracing::warn!("prefill_a_step: first-token send failed (receiver dropped): {e}");
@@ -210,7 +207,7 @@ pub fn start_chunked_prefill(
 
         let now = Instant::now();
         let cached_prompt_tok = seq.cached_prefix_tokens as u32;
-        if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
+        if eos_tokens.contains(&first) || max_tokens <= 1 {
             let mut a = ActiveSeq {
                 request_id: req_request_id.clone(),
                 accepted_prediction_tokens: 0,
@@ -243,7 +240,6 @@ pub fn start_chunked_prefill(
                 inside_thinking: req_enable_thinking && think_end_token.is_some(),
                 enable_thinking: req_enable_thinking,
                 thinking_budget: req_thinking_budget,
-                spontaneous_think_budget,
                 thinking_tokens: 0,
                 cached_prompt_tokens: cached_prompt_tok,
                 force_end_thinking: false,
@@ -252,7 +248,6 @@ pub fn start_chunked_prefill(
                 think_start_token,
                 think_ended: !req_enable_thinking && think_end_token.is_some(),
                 think_just_ended: false,
-                think_skip_count: 0,
                 require_tool_call: use_legacy_tool_call,
                 tool_call_start_token,
                 tool_call_opened: false,
@@ -261,7 +256,6 @@ pub fn start_chunked_prefill(
                 content_started: false,
                 content_tokens: 0,
                 prose_tokens_since_last_tool: 0,
-                think_watchdog_fires: 0,
                 entropy_collapse_streak: 0,
                 f27_fingerprint_ring: std::collections::VecDeque::with_capacity(F27_RING_CAP),
                 f27_attractor_streak: 0,
@@ -287,11 +281,7 @@ pub fn start_chunked_prefill(
                 seq,
                 session_hash: req_session_hash,
                 last_token: first,
-                output_tokens: if spontaneous_think {
-                    vec![]
-                } else {
-                    vec![first]
-                },
+                output_tokens: vec![first],
                 remaining: max_tokens - 1,
                 min_tokens: req_min_tokens,
                 eos_tokens: eos_tokens.to_vec(),
@@ -313,28 +303,17 @@ pub fn start_chunked_prefill(
                 dry_sequence_breakers: Vec::new(),
                 logit_bias: logit_bias.clone(),
                 pending_drafts: Vec::new(),
-                inside_thinking: spontaneous_think
-                    || (req_enable_thinking && think_end_token.is_some()),
+                inside_thinking: req_enable_thinking && think_end_token.is_some(),
                 enable_thinking: req_enable_thinking,
-                thinking_budget: if spontaneous_think {
-                    Some(spontaneous_think_budget)
-                } else {
-                    req_thinking_budget
-                },
-                spontaneous_think_budget,
+                thinking_budget: req_thinking_budget,
                 thinking_tokens: 0,
                 cached_prompt_tokens: cached_prompt_tok,
                 force_end_thinking: false,
                 consecutive_confident: 0,
                 think_end_token,
                 think_start_token,
-                think_ended: if spontaneous_think {
-                    false
-                } else {
-                    !req_enable_thinking && think_end_token.is_some()
-                },
+                think_ended: !req_enable_thinking && think_end_token.is_some(),
                 think_just_ended: false,
-                think_skip_count: 0,
                 require_tool_call: use_legacy_tool_call,
                 tool_call_start_token,
                 tool_call_opened: false,
@@ -343,7 +322,6 @@ pub fn start_chunked_prefill(
                 content_started: false,
                 content_tokens: 0,
                 prose_tokens_since_last_tool: 0,
-                think_watchdog_fires: 0,
                 entropy_collapse_streak: 0,
                 f27_fingerprint_ring: std::collections::VecDeque::with_capacity(F27_RING_CAP),
                 f27_attractor_streak: 0,
@@ -392,7 +370,6 @@ pub fn start_chunked_prefill(
             logit_bias,
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
-            spontaneous_think_budget,
             require_tool_call: req_require_tool_call,
             disable_mtp: req_disable_mtp,
             grammar_state,

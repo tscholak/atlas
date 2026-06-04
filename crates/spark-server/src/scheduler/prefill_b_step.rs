@@ -15,7 +15,6 @@ pub fn prefill_request(
     mut req: InferenceRequest,
     eos_tokens: &[u32],
     grammar_engine: &mut Option<GrammarEngine>,
-    spontaneous_think_budget: u32,
 ) -> Result<Option<ActiveSeq>> {
     // Merge user-supplied stop tokens with model EOS tokens.
     let stop_tokens = req.take_stop_tokens();
@@ -144,21 +143,13 @@ pub fn prefill_request(
         }
     };
 
-    // Spontaneous <think>: if the first token is <think> and thinking was not
-    // requested, suppress it and enter thinking mode on the ActiveSeq.
-    let spontaneous_think = !req_enable_thinking && think_start_token == Some(first);
-    if !spontaneous_think
-        && let ResponseSink::Streaming(ref tx) = sink
+    if let ResponseSink::Streaming(ref tx) = sink
         && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
     {
         tracing::warn!("prefill_b_step: first-token send failed (receiver dropped): {e}");
     }
 
-    let output_tokens = if spontaneous_think {
-        vec![]
-    } else {
-        vec![first]
-    };
+    let output_tokens = vec![first];
 
     // When grammar is active, disable legacy require_tool_call (grammar handles EOS).
     let use_legacy_tool_call =
@@ -167,7 +158,7 @@ pub fn prefill_request(
     let now = Instant::now();
     let cached_prompt_tok = seq.cached_prefix_tokens as u32;
 
-    if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
+    if eos_tokens.contains(&first) || max_tokens <= 1 {
         let mut a = ActiveSeq {
             request_id: req_request_id.clone(),
             accepted_prediction_tokens: 0,
@@ -200,7 +191,6 @@ pub fn prefill_request(
             inside_thinking: req_enable_thinking && think_end_token.is_some(),
             enable_thinking: req_enable_thinking,
             thinking_budget: req_thinking_budget,
-            spontaneous_think_budget,
             thinking_tokens: 0,
             cached_prompt_tokens: cached_prompt_tok,
             force_end_thinking: false,
@@ -209,13 +199,11 @@ pub fn prefill_request(
             think_start_token,
             think_ended: !req_enable_thinking && think_end_token.is_some(),
             think_just_ended: false,
-            think_skip_count: 0,
             require_tool_call: use_legacy_tool_call,
             disable_mtp: req_disable_mtp,
             content_started: false,
             content_tokens: 0,
             prose_tokens_since_last_tool: 0,
-            think_watchdog_fires: 0,
             entropy_collapse_streak: 0,
             f27_fingerprint_ring: std::collections::VecDeque::with_capacity(F27_RING_CAP),
             f27_attractor_streak: 0,
@@ -267,33 +255,22 @@ pub fn prefill_request(
         dry_sequence_breakers: Vec::new(),
         logit_bias,
         pending_drafts: Vec::new(),
-        inside_thinking: spontaneous_think || (req_enable_thinking && think_end_token.is_some()),
+        inside_thinking: req_enable_thinking && think_end_token.is_some(),
         enable_thinking: req_enable_thinking,
-        thinking_budget: if spontaneous_think {
-            Some(spontaneous_think_budget)
-        } else {
-            req_thinking_budget
-        },
-        spontaneous_think_budget,
+        thinking_budget: req_thinking_budget,
         thinking_tokens: 0,
         cached_prompt_tokens: cached_prompt_tok,
         force_end_thinking: false,
         consecutive_confident: 0,
         think_end_token,
         think_start_token,
-        think_ended: if spontaneous_think {
-            false
-        } else {
-            !req_enable_thinking && think_end_token.is_some()
-        },
+        think_ended: !req_enable_thinking && think_end_token.is_some(),
         think_just_ended: false,
-        think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
         disable_mtp: req_disable_mtp,
         content_started: false,
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
-        think_watchdog_fires: 0,
         entropy_collapse_streak: 0,
         f27_fingerprint_ring: std::collections::VecDeque::with_capacity(F27_RING_CAP),
         f27_attractor_streak: 0,

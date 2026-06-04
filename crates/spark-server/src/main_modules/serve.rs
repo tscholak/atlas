@@ -392,13 +392,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let session_manager = session_manager::SessionSsmManager::new(600); // 10 min TTL
     // Spontaneous-thinking budget: when the model emits `<think>` without
     // the request having explicitly enabled thinking, this caps how many
-    // thinking tokens are allowed before `</think>` is force-emitted. CLI
-    // override beats MODEL.toml. Used by the scheduler in place of a
-    // previous hard-coded 512 fallback so MODEL.toml can right-size the
-    // cap per architecture.
-    let scheduler_spontaneous_think_budget = args
-        .max_thinking_budget
-        .unwrap_or(ptx_set.behavior.max_thinking_budget);
     std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,
@@ -423,7 +416,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             grammar_engine,
             adaptive_sampling,
             session_manager,
-            scheduler_spontaneous_think_budget,
         );
     });
 

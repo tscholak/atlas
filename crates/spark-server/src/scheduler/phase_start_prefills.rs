@@ -21,7 +21,6 @@ pub(super) fn start_new_requests(
     prefill_stream: u64,
     prefill_event: u64,
     grammar_engine: &mut Option<GrammarEngine>,
-    spontaneous_think_budget: u32,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
     tool_call_start_token: Option<u32>,
@@ -51,7 +50,6 @@ pub(super) fn start_new_requests(
                 prefill_stream,
                 prefill_event,
                 grammar_engine,
-                spontaneous_think_budget,
             ) {
                 Ok(StartPrefillResult::Active(a)) => {
                     tracing::info!(
@@ -86,7 +84,6 @@ pub(super) fn start_new_requests(
                 req,
                 eos_tokens,
                 grammar_engine,
-                spontaneous_think_budget,
             ) {
                 Ok(Some(a)) => {
                     tracing::info!(

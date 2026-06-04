@@ -109,7 +109,6 @@ pub fn run(
     mut grammar_engine: Option<GrammarEngine>,
     adaptive_sampling: bool,
     mut session_manager: crate::session_manager::SessionSsmManager,
-    spontaneous_think_budget: u32,
 ) {
     model
         .bind_gpu_to_thread()
@@ -254,7 +253,6 @@ pub fn run(
             prefill_stream,
             prefill_event,
             &mut grammar_engine,
-            spontaneous_think_budget,
             think_end_token,
             think_start_token,
             tool_call_start_token,

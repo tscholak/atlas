@@ -37,10 +37,8 @@ pub(super) fn promote_completed_prefills(
             }
             continue;
         };
-        let spontaneous_think = !p.enable_thinking && think_start_token == Some(first);
         // Only stream non-EOS tokens (OpenAI: stop seq not in output).
-        if !spontaneous_think
-            && !p.eos_tokens.contains(&first)
+        if !p.eos_tokens.contains(&first)
             && let ResponseSink::Streaming(ref tx) = p.sink
             && let Err(e) = tx.blocking_send(StreamEvent::Token(first))
         {
@@ -52,13 +50,11 @@ pub(super) fn promote_completed_prefills(
             p.require_tool_call && p.grammar_state.is_none() && tool_call_start_token.is_some();
         let now = Instant::now();
         let cached_prompt_tok = p.seq.cached_prefix_tokens as u32;
-        let immediate_finish =
-            !spontaneous_think && (p.eos_tokens.contains(&first) || p.max_tokens <= 1);
+        let immediate_finish = p.eos_tokens.contains(&first) || p.max_tokens <= 1;
 
         let mut a = build_active_seq_from_prefill(
             p,
             first,
-            spontaneous_think,
             use_legacy_tool_call,
             cached_prompt_tok,
             immediate_finish,
@@ -84,7 +80,6 @@ pub(super) fn promote_completed_prefills(
 fn build_active_seq_from_prefill(
     p: PrefillInProgress,
     first: u32,
-    spontaneous_think: bool,
     use_legacy_tool_call: bool,
     cached_prompt_tok: u32,
     immediate_finish: bool,
@@ -102,11 +97,7 @@ fn build_active_seq_from_prefill(
         seq: p.seq,
         session_hash: p.session_hash,
         last_token: first,
-        output_tokens: if !immediate_finish && spontaneous_think {
-            vec![]
-        } else {
-            vec![first]
-        },
+        output_tokens: vec![first],
         remaining: if immediate_finish {
             0
         } else {
@@ -132,34 +123,20 @@ fn build_active_seq_from_prefill(
         dry_sequence_breakers: Vec::new(),
         logit_bias: p.logit_bias,
         pending_drafts: Vec::new(),
-        inside_thinking: if immediate_finish {
-            p.enable_thinking && think_end_token.is_some()
-        } else {
-            spontaneous_think || (p.enable_thinking && think_end_token.is_some())
-        },
+        inside_thinking: p.enable_thinking && think_end_token.is_some(),
         enable_thinking: p.enable_thinking,
-        thinking_budget: if !immediate_finish && spontaneous_think {
-            Some(p.spontaneous_think_budget)
-        } else {
-            p.thinking_budget
-        },
-        spontaneous_think_budget: p.spontaneous_think_budget,
+        thinking_budget: p.thinking_budget,
         thinking_tokens: 0,
         cached_prompt_tokens: cached_prompt_tok,
         force_end_thinking: false,
         consecutive_confident: 0,
         think_end_token,
         think_start_token,
-        // When thinking is disabled but model supports thinking, the template
-        // pre-closes with `<think>\n\n</think>\n\n`. Set think_ended=true so
-        // the </think> logit suppression is active from the start.
-        think_ended: if !immediate_finish && spontaneous_think {
-            false
-        } else {
-            !p.enable_thinking && think_end_token.is_some()
-        },
+        // When thinking is disabled but the model supports thinking, the
+        // template pre-closes with `<think>\n\n</think>\n\n` so the
+        // sequence starts in the post-think content phase.
+        think_ended: !p.enable_thinking && think_end_token.is_some(),
         think_just_ended: false,
-        think_skip_count: 0,
         require_tool_call: use_legacy_tool_call,
         tool_call_start_token,
         tool_call_opened: false,
@@ -168,7 +145,6 @@ fn build_active_seq_from_prefill(
         content_started: false,
         content_tokens: 0,
         prose_tokens_since_last_tool: 0,
-        think_watchdog_fires: 0,
         entropy_collapse_streak: 0,
         f27_fingerprint_ring: std::collections::VecDeque::with_capacity(F27_RING_CAP),
         f27_attractor_streak: 0,
