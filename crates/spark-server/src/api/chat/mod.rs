@@ -120,8 +120,6 @@ pub(crate) async fn chat_completions_inner(
     if let Err(resp) = super::chat_phases::validate_input(&req) {
         return resp;
     }
-    let f23_metrics = super::chat_phases::apply_failure_guards(&mut req);
-    let _ = f23_metrics; // kept available for downstream consumers
 
     // Tool-active gating.
     let tools_active = state.tool_call_parser.is_some()
