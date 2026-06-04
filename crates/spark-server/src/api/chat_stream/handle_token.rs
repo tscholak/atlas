@@ -13,7 +13,6 @@ use axum::response::sse::Event;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
 
-use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::{StreamPhase, StreamState};
 use super::tool_handlers::{
@@ -137,10 +136,7 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
         for output in outputs {
             match output {
                 tool_parser::DetectorOutput::Content(text) => {
-                    if let Some(events_out) = detector_content_arm(state, ctx, &text) {
-                        sse_events.extend(events_out);
-                        return sse_events;
-                    }
+                    emit_content(state, ctx, &text, &mut sse_events);
                 }
                 tool_parser::DetectorOutput::ToolCall(mut tc, tc_idx) => {
                     handle_complete_tool_call(state, ctx, &mut tc, tc_idx, &mut sse_events);
@@ -161,23 +157,21 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
             }
         }
     } else {
-        let sanitized = sanitize_content_chunk(
-            &delta,
-            &mut state.tag_scan_buf,
-            &mut state.suppressing_param_leak,
-            &mut state.inside_envelope,
-            &ctx.leak_markers,
-        );
-        if let Some(events_out) = process_detector_content(state, ctx, &sanitized) {
-            sse_events.extend(events_out);
-            return sse_events;
-        }
-        // process_detector_content does NOT pre-sanitize when called
-        // from the no-detector branch — but the sanitizer was already
-        // run above, so the helper's branch handling matches.
+        emit_content(state, ctx, &delta, &mut sse_events);
     }
 
     sse_events
+}
+
+/// Record + emit a `content_chunk` for the given text. No-op on empty.
+fn emit_content(state: &mut StreamState, ctx: &StreamCtx, text: &str, sse_events: &mut SseVec) {
+    if text.is_empty() {
+        return;
+    }
+    state.record_content(text);
+    let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, text.to_string());
+    let json = serde_json::to_string(&chunk).unwrap_or_default();
+    sse_events.push(Ok(Event::default().data(json)));
 }
 
 /// Process one decoder chunk while in Thinking phase.
@@ -240,91 +234,21 @@ fn thinking_step(
     }
 }
 
-/// Thinking-state SSE emit: run the model-tool-parser leak-marker
-/// sanitiser (handles envelope markers like `<minimax:tool_call>`
-/// that are tool-parser-level, NOT reasoning-parser-level) and push
-/// a `reasoning_chunk` SSE event if anything non-empty remains.
-///
-/// Reasoning-parser-level quirk cleanup (Qwen `<think>` re-opens,
-/// role-word loops, etc.) ran inside the `ThinkingScanner` upstream
-/// of this function — the text we receive is already cleaned.
+/// Thinking-phase SSE emit: record + push a `reasoning_chunk` event.
+/// No-op on empty.
 fn emit_reasoning_sse(
     sse_events: &mut SseVec,
     state: &mut StreamState,
     ctx: &StreamCtx,
     text: &str,
 ) {
-    let sanitized = sanitize_content_chunk(
-        text,
-        &mut state.reasoning_tag_scan_buf,
-        &mut state.reasoning_suppressing_leak,
-        &mut state.reasoning_inside_envelope,
-        &ctx.leak_markers,
-    );
-    // Emit on any non-empty sanitised payload, not just non-whitespace.
-    // The state machine slices the decoded stream at arbitrary byte
-    // boundaries, so a single drain can land on a chunk that's just a
-    // space or newline between two tokens. Dropping those whitespace-
-    // only chunks (as `!trim().is_empty()` did) is what produces
-    // `thefarmer`/`ina week`/`perday` artifacts when joining the SSE
-    // deltas back together client-side.
-    if !sanitized.is_empty() {
-        state.record_reasoning(&sanitized);
-        let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, sanitized);
-        let json = serde_json::to_string(&chunk).unwrap_or_default();
-        sse_events.push(Ok(Event::default().data(json)));
+    if text.is_empty() {
+        return;
     }
-}
-
-/// Common processing for a sanitized content chunk: SimHash semantic
-/// guard, token-level loop watchdog, salvage on trip, otherwise
-/// emit a `content_chunk`. Returns `Some(events)` when the watchdog
-/// fired (caller must short-circuit), else `None` (caller continues).
-///
-/// Note: when called from the detector-active branch, `sanitized`
-/// has already been routed through `sanitize_content_chunk`. When
-/// called from the no-detector branch, the caller must pre-sanitize
-/// (the no-detector path uses the same sanitizer state).
-fn process_detector_content(
-    state: &mut StreamState,
-    ctx: &StreamCtx,
-    sanitized_or_raw: &str,
-) -> Option<SseVec> {
-    // From the detector-active branch the input is the Content(text)
-    // payload that still needs sanitization. From the no-detector
-    // branch the input is already sanitized. Distinguish via a thin
-    // wrapper: detector branch ALSO sanitizes; non-detector branch
-    // skips by passing the already-sanitized text. To keep the call
-    // site simple, we sanitize here only when the input contains the
-    // hallmark of an unfiltered Content payload — which we can't
-    // reliably detect. Solution: split into two paths.
-    //
-    // Inlining: this helper is only called once per branch with the
-    // correct input type; it never re-sanitizes. The parameter is the
-    // post-sanitizer text in both call sites.
-    let sanitized = sanitized_or_raw;
-
-    if !sanitized.is_empty() {
-        state.record_content(sanitized);
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized.to_string());
-        let json = serde_json::to_string(&chunk).unwrap_or_default();
-        let events: SseVec = vec![Ok(Event::default().data(json))];
-        return Some(events);
-    }
-    None
-}
-
-/// Detector-active branch's `Content(text)` arm: sanitize first,
-/// then run the shared semantic/token watchdog + emit pipeline.
-fn detector_content_arm(state: &mut StreamState, ctx: &StreamCtx, text: &str) -> Option<SseVec> {
-    let sanitized = sanitize_content_chunk(
-        text,
-        &mut state.tag_scan_buf,
-        &mut state.suppressing_param_leak,
-        &mut state.inside_envelope,
-        &ctx.leak_markers,
-    );
-    process_detector_content(state, ctx, &sanitized)
+    state.record_reasoning(text);
+    let chunk = ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, text.to_string());
+    let json = serde_json::to_string(&chunk).unwrap_or_default();
+    sse_events.push(Ok(Event::default().data(json)));
 }
 
 /// Strip leading whitespace from the Content-phase delta until the

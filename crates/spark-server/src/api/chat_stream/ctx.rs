@@ -18,7 +18,6 @@ pub(super) struct StreamCtx {
     pub(super) tool_defs_for_backfill: Vec<tool_parser::ToolDefinition>,
     pub(super) cwd_for_normalize: Option<String>,
     pub(super) stop_strings: Vec<String>,
-    pub(super) leak_markers: tool_parser::LeakMarkers,
     pub(super) req_stream_include_usage: bool,
     pub(super) req_ctx: Option<crate::rate_limiter::RequestContext>,
     pub(super) dump_seq: Option<u64>,

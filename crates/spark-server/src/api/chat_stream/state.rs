@@ -82,22 +82,6 @@ pub(super) struct StreamState {
     /// Major FSM phase. Mutated via `enter_thinking` / `enter_content`
     /// / `mark_stopped`; queried via `is_thinking` / `is_stopped`.
     phase: StreamPhase,
-    /// Sanitiser state: suppressing content while waiting for a
-    /// matching `</parameter>` close after an orphan `<parameter=`.
-    pub(super) suppressing_param_leak: bool,
-    /// Sanitiser state: currently inside a tool-call envelope opener
-    /// (e.g. `<minimax:tool_call>`); inner `<invoke ...>` etc. are
-    /// legitimate content while this is true.
-    pub(super) inside_envelope: bool,
-    /// Mirror of `inside_envelope` for the reasoning sanitiser.
-    pub(super) reasoning_inside_envelope: bool,
-    /// Tag-scan buffer for the content sanitiser.
-    pub(super) tag_scan_buf: String,
-    /// Sanitiser state for reasoning content (parallel to
-    /// `suppressing_param_leak` above).
-    pub(super) reasoning_suppressing_leak: bool,
-    /// Tag-scan buffer for the reasoning sanitiser.
-    pub(super) reasoning_tag_scan_buf: String,
     /// Per-streaming-toolcall accumulator keyed by `oa_idx`. Holds the
     /// upstream-minted id (so it can be replayed verbatim into the
     /// observability dump at end-of-stream, matching what the client
@@ -151,12 +135,6 @@ impl StreamState {
             } else {
                 StreamPhase::Content
             },
-            suppressing_param_leak: false,
-            inside_envelope: false,
-            reasoning_inside_envelope: false,
-            tag_scan_buf: String::new(),
-            reasoning_suppressing_leak: false,
-            reasoning_tag_scan_buf: String::new(),
             streaming_tool_args: HashMap::new(),
             detector: if tools_active {
                 Some(tool_parser::StreamingToolDetector::new())

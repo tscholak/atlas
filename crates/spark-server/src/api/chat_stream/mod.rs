@@ -146,16 +146,6 @@ pub(crate) async fn chat_completions_stream(
     let role_chunk = ChatCompletionChunk::role_chunk(&model_name, &chunk_id);
     let role_json = serde_json::to_string(&role_chunk).unwrap_or_default();
 
-    // Resolve the active parser's leak-marker vocabulary once, at request
-    // setup. `'static` slices so we borrow by reference throughout the
-    // stream without cloning. If no parser is active, the sanitizer runs
-    // in pass-through mode via the fast-path in `sanitize_content_chunk`.
-    let leak_markers: tool_parser::LeakMarkers = state
-        .tool_call_parser
-        .as_ref()
-        .map(|p| p.leak_markers())
-        .unwrap_or(tool_parser::LeakMarkers::EMPTY);
-
     let ctx = StreamCtx {
         state: state.clone(),
         model: model_name.clone(),
@@ -165,7 +155,6 @@ pub(crate) async fn chat_completions_stream(
         tool_defs_for_backfill: tool_defs,
         cwd_for_normalize: cwd_hint,
         stop_strings,
-        leak_markers,
         req_stream_include_usage,
         req_ctx,
         dump_seq,

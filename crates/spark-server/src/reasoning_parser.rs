@@ -17,11 +17,10 @@
 //! literal text and demuxes by substring match. The per-phase parsers
 //! are stateful with a safe-emit idiom:
 //!
-//!   - **Content phase**: `tool_parser::StreamingToolDetector` +
-//!     `api::sanitizer::sanitize_content_chunk`. Both carry buffer
-//!     state across calls; both compute `tag_max - 1` as the held-back
-//!     tail size so partial tags straddling chunk boundaries can fuse
-//!     with the next chunk before the rules look for them.
+//!   - **Content phase**: `tool_parser::StreamingToolDetector` carries
+//!     buffer state across calls and computes `tag_max - 1` as the
+//!     held-back tail size so partial tags straddling chunk boundaries
+//!     can fuse with the next chunk before the rules look for them.
 //!
 //!   - **Thinking phase**: `ThinkingScanner` (this file). Same stateful
 //!     safe-emit idiom. Model-specific leak patterns (Qwen3.5/3.6

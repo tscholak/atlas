@@ -8,7 +8,6 @@ use axum::response::sse::Event;
 use crate::openai::{ChatCompletionChunk, Usage};
 use crate::tool_parser;
 
-use super::super::sanitizer::sanitize_content_chunk;
 use super::ctx::StreamCtx;
 use super::state::StreamState;
 use super::tool_handlers::{
@@ -41,17 +40,10 @@ pub(super) fn handle_done(
         for output in outputs {
             match output {
                 tool_parser::DetectorOutput::Content(text) => {
-                    let sanitized = sanitize_content_chunk(
-                        &text,
-                        &mut state.tag_scan_buf,
-                        &mut state.suppressing_param_leak,
-                        &mut state.inside_envelope,
-                        &ctx.leak_markers,
-                    );
-                    if !sanitized.is_empty() {
-                        state.record_content(&sanitized);
+                    if !text.is_empty() {
+                        state.record_content(&text);
                         let chunk =
-                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, sanitized);
+                            ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, text);
                         sse_events.push(Ok(Event::default()
                             .data(serde_json::to_string(&chunk).unwrap_or_default())));
                     }
@@ -79,27 +71,16 @@ pub(super) fn handle_done(
     // ── Thinking scanner tail flush ─────────────────────────────────
     // Covers EOS during the Thinking phase (max_tokens hit before
     // `</think>` arrived). Drains any bytes the scanner was holding
-    // back for safe-emit and routes them through the reasoning
-    // sanitizer below. Runs BEFORE the reasoning sanitizer flush so
-    // the sanitizer sees the scanner output as its input.
+    // back for safe-emit and emits them as the final reasoning delta.
     if let Some(mut scanner) = state.thinking_scanner.take() {
         let scanner_tail = scanner.flush();
         if !scanner_tail.is_empty() {
-            let sanitized = sanitize_content_chunk(
-                &scanner_tail,
-                &mut state.reasoning_tag_scan_buf,
-                &mut state.reasoning_suppressing_leak,
-                &mut state.reasoning_inside_envelope,
-                &ctx.leak_markers,
-            );
-            if !sanitized.is_empty() {
-                state.record_reasoning(&sanitized);
-                let chunk =
-                    ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, sanitized);
-                sse_events.push(Ok(
-                    Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-                ));
-            }
+            state.record_reasoning(&scanner_tail);
+            let chunk =
+                ChatCompletionChunk::reasoning_chunk(&ctx.model, &ctx.id, scanner_tail);
+            sse_events.push(Ok(
+                Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
+            ));
         }
     }
 
