@@ -61,7 +61,7 @@ pub(super) struct PrefillInProgress {
     pub enable_thinking: bool,
     pub thinking_budget: Option<u32>,
     pub require_tool_call: bool,
-    /// F60 (2026-04-27): MTP-disable flag (propagated to ActiveSeq).
+    /// Per-request MTP-disable flag (propagated to ActiveSeq).
     pub disable_mtp: bool,
     pub grammar_state: Option<GrammarState>,
     pub seed: Option<u64>,
@@ -230,7 +230,7 @@ pub(super) struct SwappedSeq {
     pub think_ended: bool,
     pub think_just_ended: bool,
     pub require_tool_call: bool,
-    /// F60 (2026-04-27): MTP-disable flag preserved across snapshot/restore.
+    /// MTP-disable flag preserved across snapshot/restore.
     pub disable_mtp: bool,
     pub content_started: bool,
     pub content_tokens: u32,

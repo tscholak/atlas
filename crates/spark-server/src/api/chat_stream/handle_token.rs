@@ -52,9 +52,11 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
         // `skip_special_tokens=false`: protocol markers like
         // `</think>` reach the state machine as literal text so we
         // can substring-match them deterministically. ChatML stop
-        // specials (`<|im_end|>` etc.) are filtered out at the
-        // scheduler layer (`emit_step.rs:27-46`) before they enter
-        // this function — they never appear in the decoded stream.
+        // specials (`<|im_start|>`, `<|im_end|>`) are registered in
+        // `eos_tokens` at startup (see
+        // `tokenizer_runtime.rs`) and terminate the response via the
+        // sampler's regular EOS path — they never appear in the
+        // decoded stream that reaches here.
         tokenizer_ref.streaming_decoder(false)
     });
     let chunk = match decoder.step(tok) {
@@ -115,8 +117,9 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
         state.enter_thinking();
     }
 
-    // Bare role-literal leak (Qwen3.5/3.6) — companion to the
-    // scheduler-side <|im_start|> hard-stop.
+    // Bare role-literal leak (Qwen3.5/3.6) — defensive against the
+    // model emitting `user` / `assistant` / `tool` as a content token
+    // when the chat-template role-label echo isn't fully masked.
     {
         let trimmed = delta.trim();
         if delta.len() < 20 && matches!(trimmed, "user" | "assistant" | "tool") {
