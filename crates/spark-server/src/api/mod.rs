@@ -30,6 +30,7 @@
 
 pub mod chat;
 pub mod chat_blocking;
+pub mod chat_fsm;
 pub mod chat_phases;
 pub mod chat_stream;
 pub mod chat_stream_dispatch;
