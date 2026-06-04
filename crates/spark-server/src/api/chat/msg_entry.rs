@@ -142,36 +142,6 @@ pub(super) fn build_msg_entries(
         }
     }
 
-    // Extract working directory from the system message if present.
-    let cwd_hint: Option<String> = messages.iter().find(|m| m.role == "system").and_then(|m| {
-        for line in m.content.lines() {
-            let lower = line.to_lowercase();
-            if (lower.contains("working directory")
-                || lower.contains("working_directory")
-                || lower.contains("cwd:"))
-                && let Some(pos) = line.find(':')
-            {
-                let path = line[pos + 1..]
-                    .trim()
-                    .trim_matches(|c| c == '`' || c == '"' || c == '\'');
-                if !path.is_empty() {
-                    return Some(path.to_string());
-                }
-            }
-        }
-        None
-    });
-
-    // Inject CWD hint into the system message (NOT tool definitions —
-    // those go to the Jinja template).
-    if tools_active && let Some(ref cwd) = cwd_hint {
-        let hints = format!("\n<environment>\nworking_directory: {cwd}\n</environment>");
-        if let Some(first) = messages.first_mut()
-            && first.role == "system"
-        {
-            first.content.push_str(&hints);
-        }
-    }
 
     // Preprocess images if a vision config is available.
     let mut image_pixels: Vec<(Vec<f32>, usize, usize)> = Vec::new();

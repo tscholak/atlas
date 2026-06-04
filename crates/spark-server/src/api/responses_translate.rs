@@ -25,7 +25,6 @@ use crate::tool_parser;
 use super::chat::chat_completions_inner;
 use super::compact::{compact_messages, openai_error_response, openai_error_response_with_param};
 use super::completions::not_supported;
-use super::inference_impl::{strip_stop_sequences, tokenize_stop_sequences};
 use super::inference_types::{
     GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent, TokenLogprobs,
 };

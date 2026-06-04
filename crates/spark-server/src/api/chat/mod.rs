@@ -179,7 +179,7 @@ pub(crate) async fn chat_completions_inner(
         req.repetition_penalty,
     );
 
-    // ── Phase 1: build MsgEntry vec + image preprocess + cwd ────
+    // ── Message composition: MsgEntry vec + image preprocess + cwd ──
     let msg_entry::BuildOut {
         mut messages,
         image_pixels,
@@ -189,10 +189,10 @@ pub(crate) async fn chat_completions_inner(
         Err(resp) => return resp,
     };
 
-    // ── Phase 2: thinking resolution (pre-template) ─────────────
+    // ── Thinking resolution (pre-template) ─────────────────────
     let (enable_thinking, thinking_budget) = thinking::resolve_thinking(&state, &req, tools_active);
 
-    // ── Phase 3: stale-failure observation masking ──────────────
+    // ── Stale-failure observation masking ───────────────────────
     {
         let bodies: Vec<(&str, &str)> = messages
             .iter()
@@ -215,7 +215,7 @@ pub(crate) async fn chat_completions_inner(
         }
     }
 
-    // ── Phase 5: render Jinja template + image-pad expansion ────
+    // ── Render Jinja template + image-pad expansion ─────────────
     let template::TemplateOut {
         prompt_tokens,
         enable_thinking,
@@ -250,7 +250,7 @@ pub(crate) async fn chat_completions_inner(
         );
     }
 
-    // ── Phase 6: sampling preset / stop / grammar / timeout ─────
+    // ── Sampling preset / stop / grammar / timeout ──────────────
     let sampling_setup::SamplingSetup {
         temperature,
         top_k,
@@ -280,7 +280,7 @@ pub(crate) async fn chat_completions_inner(
         Err(resp) => return resp,
     };
 
-    // ── Phase 7: dispatch streaming or blocking ─────────────────
+    // ── Dispatch streaming or blocking ──────────────────────────
     if req.stream {
         return super::chat_stream_dispatch::dispatch_streaming(
             state,
