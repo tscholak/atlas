@@ -90,43 +90,6 @@ pub(super) fn handle_token(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -
     // arrives.
     delta = trim_until_content_started(delta, &mut state.content_started);
 
-    // Strip residual think tags from content (defensive — the state
-    // machine's substring-match already consumed the canonical
-    // `</think>`, but the model can hallucinate `</thinking>`,
-    // `<thinking>`, `<analysis>`, `</analysis>` mid-content).
-    for tag in &[
-        "</think>",
-        "</thinking>",
-        "<thinking>",
-        "</analysis>",
-        "<analysis>",
-    ] {
-        while let Some(pos) = delta.find(tag) {
-            delta = format!("{}{}", &delta[..pos], delta[pos + tag.len()..].trim_start());
-        }
-    }
-    // If the model re-opens `<think>` mid-content, truncate the delta
-    // and drop back into Thinking state. Subsequent tokens accumulate
-    // into `pending_pre_tag` until the next `</end_tag>` arrives.
-    // `enter_thinking` also resets `content_started` so the next
-    // Thinking → Content transition strips the leading whitespace
-    // boundary again.
-    if let Some(pos) = delta.find("<think>") {
-        delta = delta[..pos].to_string();
-        state.enter_thinking();
-    }
-
-    // Bare role-literal leak (Qwen3.5/3.6) — defensive against the
-    // model emitting `user` / `assistant` / `tool` as a content token
-    // when the chat-template role-label echo isn't fully masked.
-    {
-        let trimmed = delta.trim();
-        if delta.len() < 20 && matches!(trimmed, "user" | "assistant" | "tool") {
-            tracing::debug!("role-literal strip: dropped bare '{trimmed}' delta");
-            delta.clear();
-        }
-    }
-
     if delta.is_empty() {
         return sse_events;
     }
@@ -340,35 +303,6 @@ fn process_detector_content(
     // correct input type; it never re-sanitizes. The parameter is the
     // post-sanitizer text in both call sites.
     let sanitized = sanitized_or_raw;
-
-    // F4 SimHash guard.
-    let semantic_trip = if !state.loop_watchdog_triggered {
-        state.simhash_pending.push_str(sanitized);
-        let mut dup = false;
-        if crate::loop_simhash::ends_at_sentence_boundary(&state.simhash_pending).is_some()
-            || state.simhash_pending.len() >= 1024
-        {
-            dup = state.simhash_guard.check(&state.simhash_pending);
-            state.simhash_pending.clear();
-        }
-        if state.simhash_pending.len() > 4096 {
-            let drop_to = state.simhash_pending.len() / 2;
-            state.simhash_pending.drain(..drop_to);
-        }
-        dup
-    } else {
-        false
-    };
-
-    if semantic_trip {
-        tracing::warn!(
-            ring_len = state.simhash_guard.len(),
-            "SimHash semantic-loop watchdog fired (paraphrased sentence repeat)"
-        );
-        state.loop_watchdog_triggered = true;
-        state.mark_stopped();
-        return Some(Vec::new());
-    }
 
     if !sanitized.is_empty() {
         state.record_content(sanitized);

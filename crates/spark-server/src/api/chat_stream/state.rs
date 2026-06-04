@@ -81,12 +81,6 @@ pub(super) struct StreamState {
     pub(super) accumulated_content: String,
     /// Major FSM phase. Mutated via `enter_thinking` / `enter_content`
     /// / `mark_stopped`; queried via `is_thinking` / `is_stopped`.
-    /// Helper functions that historically took `&mut stop_string_
-    /// triggered: bool` (`bump_f12_tool_call_count`, `check_loop_
-    /// watchdog`, etc.) operate on a local bool seeded from
-    /// `is_stopped()`; the caller folds the post-call value back
-    /// into `phase` via `mark_stopped()`. Local-bool bridge keeps
-    /// the borrow checker happy on disjoint-field reborrows.
     phase: StreamPhase,
     /// Sanitiser state: suppressing content while waiting for a
     /// matching `</parameter>` close after an orphan `<parameter=`.
@@ -104,21 +98,6 @@ pub(super) struct StreamState {
     pub(super) reasoning_suppressing_leak: bool,
     /// Tag-scan buffer for the reasoning sanitiser.
     pub(super) reasoning_tag_scan_buf: String,
-    /// Repetition-loop watchdog: tail buffer for line-level
-    /// duplicate detection.
-    pub(super) loop_scan_buf: String,
-    /// Set true when the watchdog or SimHash guard fires.
-    pub(super) loop_watchdog_triggered: bool,
-    /// F4: SimHash semantic-loop guard for paraphrased restarts.
-    pub(super) simhash_guard: crate::loop_simhash::SimHashLoopGuard,
-    /// F4: pending bytes accumulated until a sentence-boundary or
-    /// 1KB force-flush triggers a `simhash_guard.check()`.
-    pub(super) simhash_pending: String,
-    /// F5: cross-flush tool-arg dedup (default thresholds).
-    pub(super) tool_arg_dedup: crate::tool_arg_dedup::ToolArgDedup,
-    /// F11: tighter within-response tool-arg dedup for the
-    /// streaming `ToolCallEnd` path.
-    pub(super) tool_arg_dedup_within: crate::tool_arg_dedup::ToolArgDedup,
     /// Per-streaming-toolcall accumulator keyed by `oa_idx`. Holds the
     /// upstream-minted id (so it can be replayed verbatim into the
     /// observability dump at end-of-stream, matching what the client
@@ -130,19 +109,6 @@ pub(super) struct StreamState {
     /// under interleaved requests, because the upstream id comes from
     /// a global counter while `idx` is per-request.
     pub(super) streaming_tool_args: HashMap<usize, StreamingToolCall>,
-    /// F12: per-response total tool-call count.
-    pub(super) tool_calls_emitted_count: usize,
-    /// Bug-2 (OpenClaw 2026-05-08): per-tool-name consecutive-call
-    /// guard. F11 keys on `(name, canonical_args)` and is defeated by
-    /// runaway loops where the model varies args slightly each
-    /// iteration (e.g. timestamps, sequence numbers, IDs). This
-    /// counter trips whenever the same tool name fires in N
-    /// successive `ToolCallEnd` events regardless of args drift,
-    /// catching the `cron`+`exec` alternation pattern observed when
-    /// the streaming detector did successfully classify the calls.
-    /// `(last_name, run_length)`. `last_name = None` means the run
-    /// was just broken by a different tool name.
-    pub(super) name_run: Option<(String, u32)>,
     /// Streaming tool-call detector (`Some` iff `tools_active`).
     pub(super) detector: Option<tool_parser::StreamingToolDetector>,
 
@@ -191,15 +157,7 @@ impl StreamState {
             tag_scan_buf: String::new(),
             reasoning_suppressing_leak: false,
             reasoning_tag_scan_buf: String::new(),
-            loop_scan_buf: String::new(),
-            loop_watchdog_triggered: false,
-            simhash_guard: crate::loop_simhash::SimHashLoopGuard::new(),
-            simhash_pending: String::new(),
-            tool_arg_dedup: crate::tool_arg_dedup::ToolArgDedup::new(),
-            tool_arg_dedup_within: crate::tool_arg_dedup::ToolArgDedup::with_params(4, 2, 3),
             streaming_tool_args: HashMap::new(),
-            tool_calls_emitted_count: 0,
-            name_run: None,
             detector: if tools_active {
                 Some(tool_parser::StreamingToolDetector::new())
             } else {

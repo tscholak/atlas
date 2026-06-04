@@ -23,58 +23,28 @@ pub(super) fn handle_complete_tool_call(
     tc_idx: usize,
     sse_events: &mut SseVec,
 ) {
-    if state
-        .tool_arg_dedup
-        .check(&tc.function.name, &tc.function.arguments)
-    {
-        tracing::warn!(
-            tool = %tc.function.name,
-            "tool-arg dedup tripped: refusing redundant tool_call and ending response"
-        );
-        state.mark_stopped();
+    let preview: String = tc.function.arguments.chars().take(120).collect();
+    let s = if tc.function.arguments.len() > preview.len() {
+        "…"
     } else {
-        // Bug-2 name-run cap (mirrors handle_tool_call_end): catches
-        // runaway loops in the complete-tool-call path that
-        // tool_arg_dedup misses because of args drift.
-        let run_len = match &state.name_run {
-            Some((prev, n)) if prev == &tc.function.name => n + 1,
-            _ => 1,
-        };
-        state.name_run = Some((tc.function.name.clone(), run_len));
-        if run_len >= MAX_CONSEC_SAME_NAME_CALLS {
-            tracing::warn!(
-                tool = %tc.function.name,
-                run = run_len,
-                "Bug-2 name-run cap tripped (complete-call path): {run_len} successive `{}` tool calls; ending response",
-                tc.function.name
-            );
-            state.mark_stopped();
-        }
-        // Successful complete-call path — log + metric to match the
-        // blocking and incremental-streaming paths.
-        let preview: String = tc.function.arguments.chars().take(120).collect();
-        let s = if tc.function.arguments.len() > preview.len() {
-            "…"
-        } else {
-            ""
-        };
-        tracing::info!("Tool call: {}({preview}{s})", tc.function.name);
-        crate::metrics::TOOL_CALLS_TOTAL.inc();
-        state.record_tool_call(tc.clone());
-        let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&start).unwrap_or_default())
-        ));
-        let frag = ChatCompletionChunk::tool_call_args_fragment(
-            &ctx.model,
-            &ctx.id,
-            tc_idx,
-            &tc.function.arguments,
-        );
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
-        ));
-    }
+        ""
+    };
+    tracing::info!("Tool call: {}({preview}{s})", tc.function.name);
+    crate::metrics::TOOL_CALLS_TOTAL.inc();
+    state.record_tool_call(tc.clone());
+    let start = ChatCompletionChunk::tool_call_start_chunk(&ctx.model, &ctx.id, tc, tc_idx);
+    sse_events.push(Ok(
+        Event::default().data(serde_json::to_string(&start).unwrap_or_default())
+    ));
+    let frag = ChatCompletionChunk::tool_call_args_fragment(
+        &ctx.model,
+        &ctx.id,
+        tc_idx,
+        &tc.function.arguments,
+    );
+    sse_events.push(Ok(
+        Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
+    ));
 }
 
 /// `DetectorOutput::ToolCallStart` — incremental: emit header now.
@@ -145,19 +115,9 @@ pub(super) fn handle_tool_call_delta(
     }
 }
 
-/// `DetectorOutput::ToolCallEnd` — F11 within-response dedup +
-/// F44 cross-turn permanent-failure check + Bug-2 name-run cap.
-///
-/// Bug-2 cap (`MAX_CONSEC_SAME_NAME_CALLS`): trips when the same tool
-/// name fires N times in a row regardless of args. F11 keys on
-/// `(name, canonical_args)` and is defeated by runaway loops where
-/// the model rolls a fresh timestamp / sequence number / id into the
-/// payload each iteration; the F12 total cap (default 12) is the
-/// only other server-side circuit, but a runaway can already have
-/// flooded the SSE channel before F12 fires. The name-run cap is
-/// strictly tighter than F11 and F12 for the runaway pattern.
-const MAX_CONSEC_SAME_NAME_CALLS: u32 = 6;
-
+/// `DetectorOutput::ToolCallEnd` — assemble the streaming tool call
+/// into a record for the observability dump and emit the per-call
+/// log + metric to match the blocking and complete-call paths.
 pub(super) fn handle_tool_call_end(state: &mut StreamState, idx: usize) {
     if let Some(super::state::StreamingToolCall {
         id,
@@ -165,12 +125,6 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, idx: usize) {
         args: args_json,
     }) = state.streaming_tool_args.remove(&idx)
     {
-        // Observability dump: the streaming detector's per-fragment
-        // SSE emits are assembled client-side into a single
-        // `tool_calls[]` entry. Record the same assembled shape — with
-        // the id the client saw on the wire (not a re-derivation from
-        // idx) — into the dump accumulator so the dumped response is
-        // a faithful replay.
         state.record_tool_call(tool_parser::ToolCall {
             id,
             call_type: "function".to_string(),
@@ -179,37 +133,13 @@ pub(super) fn handle_tool_call_end(state: &mut StreamState, idx: usize) {
                 arguments: args_json.clone(),
             },
         });
-        if state.tool_arg_dedup_within.check(&name, &args_json) {
-            tracing::warn!(
-                tool = %name,
-                "F11 within-response dedup tripped: 2+ identical streaming tool calls; ending response"
-            );
-            state.mark_stopped();
-        }
-        let run_len = match &state.name_run {
-            Some((prev, n)) if prev == &name => n + 1,
-            _ => 1,
+        let preview: String = args_json.chars().take(120).collect();
+        let s = if args_json.len() > preview.len() {
+            "…"
+        } else {
+            ""
         };
-        state.name_run = Some((name.clone(), run_len));
-        if run_len >= MAX_CONSEC_SAME_NAME_CALLS && !state.is_stopped() {
-            tracing::warn!(
-                tool = %name,
-                run = run_len,
-                "Bug-2 name-run cap tripped: {run_len} successive `{name}` tool calls; ending response (F11 missed because args drift)"
-            );
-            state.mark_stopped();
-        }
-        if !state.is_stopped() {
-            // Successful streaming tool call — log + metric to match the
-            // blocking and complete-call paths.
-            let preview: String = args_json.chars().take(120).collect();
-            let s = if args_json.len() > preview.len() {
-                "…"
-            } else {
-                ""
-            };
-            tracing::info!("Tool call: {name}({preview}{s})");
-            crate::metrics::TOOL_CALLS_TOTAL.inc();
-        }
+        tracing::info!("Tool call: {name}({preview}{s})");
+        crate::metrics::TOOL_CALLS_TOTAL.inc();
     }
 }

@@ -33,7 +33,6 @@ mod halluc_probe;
 mod hint_injector;
 mod llmlingua;
 mod lookback_lens;
-mod loop_simhash;
 mod lqer;
 mod main_modules;
 pub mod metrics;
@@ -53,7 +52,6 @@ mod scheduling_policy;
 mod session_manager;
 mod symbol_trie;
 mod tokenizer;
-mod tool_arg_dedup;
 pub mod tool_parser;
 mod tool_rag;
 
