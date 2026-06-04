@@ -39,23 +39,7 @@ pub(super) fn handle_complete_tool_call(
             Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
         ));
     }
-    tool_parser::backfill_required_params(std::slice::from_mut(tc), &ctx.tool_defs_for_backfill);
-    if let Some(ref cwd) = ctx.cwd_for_normalize {
-        tool_parser::normalize_paths(std::slice::from_mut(tc), cwd);
-    }
-    if let Err(e) = tool_parser::validate_single_tool_call(tc, &ctx.tool_defs_for_backfill) {
-        tracing::warn!(
-            tool = %tc.function.name,
-            "tool call validation error: {e}; replacing with content and ending"
-        );
-        let msg = format!("[atlas] Tool call rejected: {e}");
-        state.record_content(&msg);
-        let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
-        sse_events.push(Ok(
-            Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-        ));
-        state.mark_stopped();
-    } else if state
+    if state
         .tool_arg_dedup
         .check(&tc.function.name, &tc.function.arguments)
     {
@@ -195,50 +179,12 @@ pub(super) fn handle_tool_call_delta(
     idx: usize,
     sse_events: &mut SseVec,
 ) {
-    let mut emit_args = args.clone();
     if let Some(entry) = state.streaming_tool_args.get_mut(&idx) {
-        let name = entry.name.clone();
-        let id = entry.id.clone();
-        let mut tc = tool_parser::ToolCall {
-            id,
-            call_type: "function".into(),
-            function: tool_parser::FunctionCall {
-                name: name.clone(),
-                arguments: args.clone(),
-            },
-        };
-        tool_parser::backfill_required_params(
-            std::slice::from_mut(&mut tc),
-            &ctx.tool_defs_for_backfill,
-        );
-        if let Some(ref cwd) = ctx.cwd_for_normalize {
-            tool_parser::normalize_paths(std::slice::from_mut(&mut tc), cwd);
-        }
-        if let Err(e) = tool_parser::validate_single_tool_call(&tc, &ctx.tool_defs_for_backfill) {
-            tracing::warn!(
-                tool = %name,
-                "tool call validation error (stream Δ): {e}; replacing with content and ending"
-            );
-            let msg = format!("[atlas] Tool call rejected: {e}");
-            // Drop `entry` borrow first (it holds &mut state.streaming_tool_args)
-            // so we can call &mut state methods (record_content, mark_stopped).
-            entry.args.push_str(&args);
-            state.record_content(&msg);
-            let chunk = ChatCompletionChunk::content_chunk(&ctx.model, &ctx.id, msg);
-            sse_events.push(Ok(
-                Event::default().data(serde_json::to_string(&chunk).unwrap_or_default())
-            ));
-            state.mark_stopped();
-            return;
-        }
-        emit_args = tc.function.arguments.clone();
-        entry.args.push_str(&emit_args);
-    } else if !args.is_empty() {
-        // No prior ToolCallStart for this idx — keep legacy passthrough.
+        entry.args.push_str(&args);
     }
-    if !emit_args.is_empty() {
+    if !args.is_empty() {
         let frag =
-            ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &emit_args);
+            ChatCompletionChunk::tool_call_args_fragment(&ctx.model, &ctx.id, idx, &args);
         sse_events.push(Ok(
             Event::default().data(serde_json::to_string(&frag).unwrap_or_default())
         ));

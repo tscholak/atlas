@@ -56,7 +56,6 @@ pub(super) struct BlockingPathArgs {
     pub grammar_spec: Option<GrammarSpec>,
     pub top_logprobs: Option<u8>,
     pub timeout_at: Option<std::time::Instant>,
-    pub cwd_hint: Option<String>,
     pub prompt_len: usize,
 }
 
@@ -92,7 +91,6 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         grammar_spec,
         top_logprobs,
         timeout_at,
-        cwd_hint,
         prompt_len,
     } = args;
 
@@ -194,12 +192,10 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
 
         let (message, finish_reason_i) = build_choice_message(
             &state,
-            &req,
             &response,
             reasoning_content_i,
             output_text_i,
             tools_active,
-            cwd_hint.as_deref(),
             choice_idx,
         );
 
@@ -286,12 +282,10 @@ fn decode_response_text(
 /// here.
 fn build_choice_message(
     _state: &AppState,
-    req: &ChatCompletionRequest,
     response: &super::inference_types::InferenceResponse,
     reasoning_content_i: Option<String>,
     output_text_i: String,
     tools_active: bool,
-    cwd_hint: Option<&str>,
     choice_idx: usize,
 ) -> (crate::openai::ChatMessage, String) {
     let _ = response; // currently only used for finish_reason.clone() below
@@ -313,54 +307,17 @@ fn build_choice_message(
                 "raw pre-parse output (tools_active, choice {choice_idx}): {output_text_i:?}"
             );
         }
-        let (content, mut tool_calls_i) = tool_parser::parse_tool_calls(&output_text_i);
+        let (content, tool_calls_i) = tool_parser::parse_tool_calls(&output_text_i);
         if !tool_calls_i.is_empty() {
-            let tools_ref = req.tools.as_ref().cloned().unwrap_or_default();
-            tool_parser::backfill_required_params(&mut tool_calls_i, &tools_ref);
-            if let Some(cwd) = cwd_hint {
-                tool_parser::normalize_paths(&mut tool_calls_i, cwd);
-            }
-            let validated = tool_parser::validate_tool_calls(tool_calls_i, &tools_ref);
-            if !validated.errors.is_empty() {
-                for err in &validated.errors {
-                    tracing::warn!("Tool call validation error: {err}");
-                }
-            }
-            // Strip orphan tool call XML tags + ```lang fences from content
-            // (Qwen3-Coder pattern: emits markdown narration AND structured
-            // tool_call for the same payload).
-            let content = content.map(|mut c| {
-                for tag in &["</parameter>", "</function>", "</tool_call>", "<tool_call>"] {
-                    c = c.replace(tag, "");
-                }
-                while let Some(start) = c.find("<function=") {
-                    let end = c[start..]
-                        .find('>')
-                        .map(|p| start + p + 1)
-                        .unwrap_or(c.len());
-                    c = format!("{}{}", &c[..start], &c[end..]);
-                }
-                while let Some(start) = c.find("```") {
-                    let after_open = start + 3;
-                    let Some(rel_close) = c[after_open..].find("```") else {
-                        break;
-                    };
-                    let close_end = after_open + rel_close + 3;
-                    c = format!("{}{}", &c[..start], &c[close_end..]);
-                }
-                c.trim().to_string()
-            });
             message.content = content;
-            if !validated.valid.is_empty() {
-                for tc in &validated.valid {
-                    let p: String = tc.function.arguments.chars().take(120).collect();
-                    let s = ["", "…"][usize::from(tc.function.arguments.len() > p.len())];
-                    tracing::info!("Tool call: {}({p}{s})", tc.function.name);
-                    crate::metrics::TOOL_CALLS_TOTAL.inc();
-                }
-                message.tool_calls = Some(validated.valid);
-                finish_reason_i = "tool_calls".to_string();
+            for tc in &tool_calls_i {
+                let p: String = tc.function.arguments.chars().take(120).collect();
+                let s = ["", "…"][usize::from(tc.function.arguments.len() > p.len())];
+                tracing::info!("Tool call: {}({p}{s})", tc.function.name);
+                crate::metrics::TOOL_CALLS_TOTAL.inc();
             }
+            message.tool_calls = Some(tool_calls_i);
+            finish_reason_i = "tool_calls".to_string();
         }
     }
 

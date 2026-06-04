@@ -343,7 +343,6 @@ impl ToolCallFormat {
 
 // ── Sub-modules (split from monolithic file) ──
 mod bare_json;
-mod fuzzy_match;
 mod gemma4;
 mod helpers_a;
 mod helpers_b;
@@ -359,7 +358,6 @@ mod pipeline_helpers;
 mod qwen3_coder;
 mod streaming;
 mod streaming_impl;
-mod validation;
 
 pub use bare_json::*;
 pub use gemma4::*;
@@ -376,7 +374,6 @@ pub use pipeline::*;
 use pipeline_helpers::*;
 pub use qwen3_coder::*;
 pub use streaming::*;
-pub use validation::*;
 
 #[cfg(test)]
 mod tests;

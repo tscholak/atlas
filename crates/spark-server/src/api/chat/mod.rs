@@ -331,7 +331,6 @@ pub(crate) async fn chat_completions_inner(
         grammar_spec,
         top_logprobs,
         timeout_at,
-        cwd_hint,
         prompt_len,
     })
     .await
