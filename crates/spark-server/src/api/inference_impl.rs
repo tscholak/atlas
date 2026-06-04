@@ -317,29 +317,3 @@ pub(crate) fn strip_stop_sequences(mut text: String, stops: &[String]) -> String
     }
     text
 }
-
-/// Strip `<think>...</think>` reasoning content from model output.
-///
-/// Qwen3.5 models generate internal reasoning between `<think>` and `</think>` tags.
-/// This must be removed from the API response so that:
-/// 1. Clients don't see internal reasoning in the content field
-/// 2. Multi-turn conversations aren't corrupted when clients echo assistant content back
-///
-/// Returns only the text after the final `</think>` tag (the actual response),
-/// trimmed of leading whitespace.
-/// Extract `<think>...</think>` reasoning from model output.
-///
-/// Returns `(reasoning_content, response_content)`.
-/// - `enable_thinking=true`: reasoning extracted into first element, response in second.
-/// - `enable_thinking=false`: reasoning discarded (None), only response returned.
-pub(crate) fn extract_thinking(
-    text: &str,
-    enable_thinking: bool,
-    parser: Option<&dyn crate::reasoning_parser::ReasoningParser>,
-) -> (Option<String>, String) {
-    if let Some(p) = parser {
-        p.extract_thinking(text, enable_thinking)
-    } else {
-        (None, text.to_string())
-    }
-}

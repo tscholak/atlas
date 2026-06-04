@@ -160,7 +160,6 @@ pub(crate) async fn chat_completions_inner(
     // ── Phase 1: build MsgEntry vec + image preprocess + cwd ────
     let msg_entry::BuildOut {
         mut messages,
-        cwd_hint,
         image_pixels,
         image_pad_counts,
     } = match msg_entry::build_msg_entries(&state, &req, tools_active) {
@@ -289,7 +288,6 @@ pub(crate) async fn chat_completions_inner(
             thinking_budget,
             tools_active,
             tool_choice_required,
-            cwd_hint.clone(),
             stop_tokens,
             grammar_spec.clone(),
             top_logprobs,

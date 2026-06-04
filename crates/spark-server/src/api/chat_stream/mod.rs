@@ -28,7 +28,6 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::AppState;
 use crate::openai::ChatCompletionChunk;
-use crate::tool_parser;
 
 use super::chat_fsm::stepper::{Stepper, StepperConfig, extend_tokenizer_lifetime};
 use super::inference_types::{GrammarSpec, InferenceRequest, StreamEvent};
@@ -62,8 +61,6 @@ pub(crate) async fn chat_completions_stream(
     thinking_budget: Option<u32>,
     tools_active: bool,
     tool_choice_required: bool,
-    _tool_defs: Vec<tool_parser::ToolDefinition>,
-    _cwd_hint: Option<String>,
     stop_tokens: Vec<u32>,
     grammar_spec: Option<GrammarSpec>,
     seed: Option<u64>,

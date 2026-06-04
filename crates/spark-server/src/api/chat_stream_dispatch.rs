@@ -13,7 +13,6 @@ use axum::response::Response;
 
 use crate::AppState;
 use crate::openai::ChatCompletionRequest;
-use crate::tool_parser;
 
 use super::chat_stream::chat_completions_stream;
 use super::compact::openai_error_response;
@@ -46,7 +45,6 @@ pub(super) async fn dispatch_streaming(
     thinking_budget: Option<u32>,
     tools_active: bool,
     tool_choice_required: bool,
-    cwd_hint: Option<String>,
     stop_tokens: Vec<u32>,
     grammar_spec: Option<GrammarSpec>,
     top_logprobs: Option<u8>,
@@ -59,7 +57,6 @@ pub(super) async fn dispatch_streaming(
             "n > 1 is not supported in streaming mode".to_string(),
         );
     }
-    let tool_defs: Vec<tool_parser::ToolDefinition> = req.tools.clone().unwrap_or_default();
     // Sort by length descending so the streaming stop-string scan
     // matches the longest overlapping prefix first (e.g. when the
     // caller provides ["</answer", "</answer>"], `find` would
@@ -95,8 +92,6 @@ pub(super) async fn dispatch_streaming(
         thinking_budget,
         tools_active,
         tool_choice_required,
-        tool_defs,
-        cwd_hint,
         stop_tokens,
         grammar_spec,
         req.seed,

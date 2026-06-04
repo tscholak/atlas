@@ -38,7 +38,6 @@ pub(super) struct MsgEntry {
 /// the caller threads each field through five later phases.
 pub(super) struct BuildOut {
     pub(super) messages: Vec<MsgEntry>,
-    pub(super) cwd_hint: Option<String>,
     pub(super) image_pixels: Vec<(Vec<f32>, usize, usize)>,
     pub(super) image_pad_counts: Vec<usize>,
 }
@@ -203,7 +202,6 @@ pub(super) fn build_msg_entries(
 
     Ok(BuildOut {
         messages,
-        cwd_hint,
         image_pixels,
         image_pad_counts,
     })

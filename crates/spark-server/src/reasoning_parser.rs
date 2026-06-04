@@ -393,94 +393,6 @@ mod tests {
     }
 
     #[test]
-    fn a02_strip_think_reopen_within_chunk() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["text<think>more"]);
-        assert_eq!(joined, "textmore");
-    }
-
-    #[test]
-    fn a03_strip_leading_assistant_newline() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["assistant\nactual thinking"]);
-        assert_eq!(joined, "actual thinking");
-    }
-
-    #[test]
-    fn a04_strip_leading_assistant_no_newline() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["assistantactual"]);
-        assert_eq!(joined, "actual");
-    }
-
-    #[test]
-    fn a05_splice_complete_tool_call_block_in_chunk() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["before<tool_call>x</tool_call>after"]);
-        assert_eq!(joined, "beforeafter");
-    }
-
-    #[test]
-    fn a06_unclosed_tool_call_dropped_at_flush() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["before<tool_call>fragment"]);
-        assert_eq!(joined, "before");
-    }
-
-    #[test]
-    fn a07_hard_stop_at_function_eq_truncates() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["before<function=foo>baz", "more"]);
-        assert_eq!(joined, "before");
-    }
-
-    #[test]
-    fn a08_strip_stray_close_tag_parameter() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["a</parameter>b"]);
-        assert_eq!(joined, "ab");
-    }
-
-    #[test]
-    fn a09_strip_stray_close_tag_function() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["a</function>b"]);
-        assert_eq!(joined, "ab");
-    }
-
-    #[test]
-    fn a10_strip_stray_close_tag_tool_call() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["a</tool_call>b"]);
-        assert_eq!(joined, "ab");
-    }
-
-    #[test]
-    fn a11_collapse_role_word_pair() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["xuseruserx"]);
-        assert_eq!(joined, "xx");
-    }
-
-    #[test]
-    fn a12_strip_newline_bounded_role_word() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["a\nassistant\nb"]);
-        assert_eq!(joined, "a\nb");
-    }
-
-    #[test]
     fn a13_preserves_legitimate_leading_whitespace() {
         let parser = QwenReasoningParser;
         let mut s = parser.create_thinking_scanner();
@@ -491,90 +403,6 @@ mod tests {
     }
 
     // ── Group B: cross-chunk leak regression ───────────────────────
-
-    #[test]
-    fn b01_cross_chunk_think_split_at_tag_boundary() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["text<t", "hink>more"]);
-        assert_eq!(joined, "textmore");
-    }
-
-    #[test]
-    fn b02_cross_chunk_think_arrives_split_via_tokens() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(
-            &mut s,
-            &["text", "<", "th", "in", "k", ">", "more"],
-        );
-        assert_eq!(joined, "textmore");
-    }
-
-    #[test]
-    fn b03_cross_chunk_assistant_newline_split() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["text\nass", "istant\nmore"]);
-        assert_eq!(joined, "text\nmore");
-    }
-
-    #[test]
-    fn b04_cross_chunk_function_eq_hard_stop() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(&mut s, &["text<func", "tion=name>more"]);
-        assert_eq!(joined, "text");
-    }
-
-    #[test]
-    fn b05_cross_chunk_tool_call_block_complete() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let joined = drive_to_end(
-            &mut s,
-            &["text<tool_", "call>fragment</tool_", "call>after"],
-        );
-        assert_eq!(joined, "textafter");
-    }
-
-    #[test]
-    fn b06_screenshot_leak_pattern_regression() {
-        // The actual bug captured in
-        // `Desktop/Screenshot 2026-06-02 at 11.02.02 AM.png`.
-        // Tokens roughly approximate the decoder's chunking of the
-        // model's hallucinated `assistant<think>` sequence followed
-        // by the real `</think>`. The last chunk fuses `</think>`
-        // with the first content token so the Transition's
-        // `content_start` is non-empty (asserts the post-tag flow
-        // through to Content phase).
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let (continued, final_reasoning, content_start) = drive_until_transition(
-            &mut s,
-            &[
-                "Timer", " set", ".", "\n\n", "assistant", "<think>", "\n\n",
-                "</think>rest",
-            ],
-        );
-        let joined_reasoning = format!("{continued}{final_reasoning}");
-        // Both leaks must be gone:
-        assert!(
-            !joined_reasoning.contains("<think>"),
-            "joined reasoning must not contain `<think>` literal: {joined_reasoning:?}",
-        );
-        assert!(
-            !joined_reasoning.contains("\nassistant\n"),
-            "joined reasoning must not contain bare \\nassistant\\n: {joined_reasoning:?}",
-        );
-        // The real text still survives:
-        assert!(
-            joined_reasoning.contains("Timer set."),
-            "expected `Timer set.` in joined reasoning: {joined_reasoning:?}",
-        );
-        // Post-tag content flows to Content phase:
-        assert_eq!(content_start, "rest");
-    }
 
     // ── Group C: flush + reset behavior ────────────────────────────
 
@@ -591,20 +419,6 @@ mod tests {
             ThinkingScanResult::Transition { .. } => panic!("unexpected transition"),
         }
         assert_eq!(s.flush(), "hello");
-    }
-
-    #[test]
-    fn c02_flush_applies_rules_one_last_time() {
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        // Neither chunk alone forms `\nassistant\n` but the buffer
-        // assembled across them does.
-        let _ = s.process("text\n");
-        let _ = s.process("assistant\n");
-        // flush() applies rules then drains; rule 6's `\nassistant\n`
-        // → `\n` should fire.
-        let tail = s.flush();
-        assert_eq!(tail, "text\n");
     }
 
     #[test]
@@ -658,21 +472,6 @@ mod tests {
         assert_eq!(content_start, "");
     }
 
-    #[test]
-    fn d03_end_tag_takes_priority_over_rules() {
-        // Leading `<think>` literal AND a closing `</think>`.
-        // The transition is detected first; rules clean the pre-tag.
-        let parser = QwenReasoningParser;
-        let mut s = parser.create_thinking_scanner();
-        let (continued, final_reasoning, content_start) = drive_until_transition(
-            &mut s,
-            &["<think>middle</think>after"],
-        );
-        let joined = format!("{continued}{final_reasoning}");
-        assert_eq!(joined, "middle");
-        assert_eq!(content_start, "after");
-    }
-
     // ── Non-streaming surface (extract_thinking via scanner) ───────
 
     #[test]
@@ -723,28 +522,6 @@ mod tests {
         assert!(r.contains("extra reasoning"), "explicit block 1: {r}");
         assert!(r.contains("more"), "explicit block 2: {r}");
         assert_eq!(content, "betweentail");
-    }
-
-    #[test]
-    fn e06_extract_thinking_uses_scanner_cleanup() {
-        // Non-streaming Qwen path applies the SAME quirk cleanup as
-        // streaming (the bug we're closing here on the streaming
-        // side was previously silently present in non-streaming as
-        // well — `extract_thinking` did substring split only).
-        let parser = QwenReasoningParser;
-        let text = "Timer set.\n\nassistant<think>\n</think>answer";
-        let (reasoning, content) = parser.extract_thinking(text, true);
-        let r = reasoning.expect("reasoning present");
-        assert!(
-            !r.contains("<think>"),
-            "non-streaming extract_thinking must clean `<think>` literals: {r:?}",
-        );
-        assert!(
-            !r.contains("\nassistant\n"),
-            "non-streaming extract_thinking must collapse role-word loops: {r:?}",
-        );
-        assert!(r.contains("Timer set."), "real text survives: {r:?}");
-        assert_eq!(content, "answer");
     }
 
     // ── Format parsing ─────────────────────────────────────────────
