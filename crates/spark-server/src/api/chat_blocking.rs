@@ -15,10 +15,10 @@ use axum::response::{IntoResponse, Json, Response};
 
 use crate::AppState;
 use crate::openai::{ChatCompletionRequest, ChatCompletionResponse, Usage};
-use crate::tool_parser;
 
+use super::chat_fsm::assemble::assemble_choice;
+use super::chat_fsm::stepper::StepperConfig;
 use super::compact::openai_error_response;
-use super::inference_impl::{extract_thinking, strip_stop_sequences};
 use super::inference_types::{GrammarSpec, InferenceRequest};
 
 pub(super) struct BlockingPathArgs {
@@ -185,25 +185,33 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         total_accepted_prediction_tokens += response.accepted_prediction_tokens;
         total_rejected_prediction_tokens += response.rejected_prediction_tokens;
 
-        let (reasoning_content_i, output_text_i) =
-            decode_response_text(&state, &response, enable_thinking);
-        let output_text_i = strip_stop_sequences(output_text_i, &req.stop);
-
-        let (message, finish_reason_i) = build_choice_message(
-            &state,
-            &response,
-            reasoning_content_i,
-            output_text_i,
+        // Drive the unified chat_fsm Stepper over this choice's
+        // output_tokens. Reasoning split, stop-string trimming, and
+        // tool-call extraction all flow through ONE FSM that the
+        // streaming path also drives. The blocking-path-specific
+        // `decode_response_text` / `strip_stop_sequences` /
+        // `build_choice_message` / `parse_tool_calls` quartet is
+        // replaced by `assemble_choice` + a `StepperConfig`.
+        let stepper_cfg = StepperConfig {
+            enable_thinking,
             tools_active,
-            choice_idx,
-        );
-
-        all_choices.push(crate::openai::ChatChoice {
-            index: choice_idx,
-            message,
-            finish_reason: finish_reason_i,
-            logprobs: build_logprobs(&state, &response),
-        });
+            stop_strings: req.stop.clone(),
+            reasoning_parser: state.reasoning_parser.as_deref().map(|p| {
+                // SAFETY: the `Arc<AppState>` is held in the
+                // surrounding `run_blocking_path` scope; it outlives
+                // the per-choice Stepper. Centralised lifetime
+                // extension lives in `chat_fsm::stepper`.
+                unsafe {
+                    std::mem::transmute::<
+                        &dyn crate::reasoning_parser::ReasoningParser,
+                        &'static dyn crate::reasoning_parser::ReasoningParser,
+                    >(p)
+                }
+            }),
+        };
+        let logprobs = build_logprobs(&state, &response);
+        let choice = assemble_choice(&state, &response, stepper_cfg, choice_idx, logprobs);
+        all_choices.push(choice);
     }
 
     finalize_response(
@@ -222,105 +230,6 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         total_rejected_prediction_tokens,
         prompt_len,
     )
-}
-
-/// Decode `(reasoning_content, output_text)` from the scheduler's
-/// response. When `enable_thinking=true`, split at the last `</think>`
-/// token. When `enable_thinking=false`, decode all output_tokens as
-/// content — mirrors streaming's `thinking_done = !enable_thinking`
-/// init in chat_stream/state.rs and recovers the answer Qwen3.x emits
-/// inside `<think>...</think>` when it ignores a closed-thinking
-/// prefill (issue #40).
-fn decode_response_text(
-    state: &AppState,
-    response: &super::inference_types::InferenceResponse,
-    enable_thinking: bool,
-) -> (Option<String>, String) {
-    if let Some(think_tok) = state.think_end_token_id {
-        let last_think_pos = if enable_thinking {
-            response.output_tokens.iter().rposition(|&t| t == think_tok)
-        } else {
-            None
-        };
-        if let Some(pos) = last_think_pos {
-            let thinking_tokens = &response.output_tokens[..pos];
-            let content_tokens = &response.output_tokens[pos + 1..];
-            let reasoning = if !thinking_tokens.is_empty() {
-                state
-                    .tokenizer
-                    .decode(thinking_tokens)
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-            } else {
-                None
-            };
-            let content = state
-                .tokenizer
-                .decode(content_tokens)
-                .unwrap_or_default()
-                .trim_start()
-                .to_string();
-            return (reasoning, content);
-        }
-        let text = state
-            .tokenizer
-            .decode(&response.output_tokens)
-            .unwrap_or_default();
-        (None, text)
-    } else {
-        let text = state
-            .tokenizer
-            .decode(&response.output_tokens)
-            .unwrap_or_default();
-        extract_thinking(&text, enable_thinking, state.reasoning_parser.as_deref())
-    }
-}
-
-/// Build the assistant message + finish_reason for one choice. Tool
-/// parsing, validation, content-strip + refusal-classifier all live
-/// here.
-fn build_choice_message(
-    _state: &AppState,
-    response: &super::inference_types::InferenceResponse,
-    reasoning_content_i: Option<String>,
-    output_text_i: String,
-    tools_active: bool,
-    choice_idx: usize,
-) -> (crate::openai::ChatMessage, String) {
-    let _ = response; // currently only used for finish_reason.clone() below
-    let mut message = crate::openai::ChatMessage {
-        role: "assistant".to_string(),
-        reasoning_content: reasoning_content_i.clone(),
-        reasoning: reasoning_content_i,
-        annotations: crate::citation::merged_annotations(&output_text_i),
-        refusal: None,
-        content: Some(output_text_i.clone()),
-        tool_calls: None,
-    };
-    let mut finish_reason_i = response.finish_reason.clone();
-
-    if tools_active {
-        if std::env::var("ATLAS_LOG_TOOL_RAW").as_deref() == Ok("1") {
-            tracing::info!(
-                target: "atlas::tool_debug",
-                "raw pre-parse output (tools_active, choice {choice_idx}): {output_text_i:?}"
-            );
-        }
-        let (content, tool_calls_i) = tool_parser::parse_tool_calls(&output_text_i);
-        if !tool_calls_i.is_empty() {
-            message.content = content;
-            for tc in &tool_calls_i {
-                let p: String = tc.function.arguments.chars().take(120).collect();
-                let s = ["", "…"][usize::from(tc.function.arguments.len() > p.len())];
-                tracing::info!("Tool call: {}({p}{s})", tc.function.name);
-                crate::metrics::TOOL_CALLS_TOTAL.inc();
-            }
-            message.tool_calls = Some(tool_calls_i);
-            finish_reason_i = "tool_calls".to_string();
-        }
-    }
-
-    (message, finish_reason_i)
 }
 
 /// Convert internal logprobs to OpenAI `ChoiceLogprobs` format.
