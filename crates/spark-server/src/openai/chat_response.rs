@@ -152,6 +152,7 @@ impl ChatCompletionResponse {
                 },
                 finish_reason: finish_reason.to_string(),
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage,
             service_tier: None,
@@ -184,6 +185,7 @@ impl ChatCompletionResponse {
                 },
                 finish_reason: "tool_calls".to_string(),
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage,
             service_tier: None,
@@ -213,6 +215,11 @@ pub struct ChunkChoice {
     pub delta: ChunkDelta,
     pub finish_reason: Option<String>,
     pub logprobs: Option<ChoiceLogprobs>,
+    /// Exact sampled token IDs for this chunk (vLLM-compatible
+    /// `return_token_ids`). Skipped when empty so the default wire
+    /// format is byte-identical for clients that did not opt in.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub token_ids: Vec<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -265,6 +272,7 @@ impl ChatCompletionChunk {
                 },
                 finish_reason: None,
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage: None,
         }
@@ -291,6 +299,7 @@ impl ChatCompletionChunk {
                 },
                 finish_reason: None,
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage: None,
         }
@@ -316,6 +325,7 @@ impl ChatCompletionChunk {
                 },
                 finish_reason: None,
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage: None,
         }
@@ -356,6 +366,7 @@ impl ChatCompletionChunk {
                 },
                 finish_reason: None,
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage: None,
         }
@@ -392,6 +403,7 @@ impl ChatCompletionChunk {
                 },
                 finish_reason: None,
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage: None,
         }
@@ -417,6 +429,7 @@ impl ChatCompletionChunk {
                 },
                 finish_reason: Some(finish_reason.to_string()),
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage: Some(usage),
         }
@@ -463,9 +476,23 @@ impl ChatCompletionChunk {
                 },
                 finish_reason: None,
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage: None,
         }
+    }
+
+    /// Stamp `choices[0].token_ids` with the supplied IDs. No-op when
+    /// `ids` is empty or the chunk has no choices (e.g. `usage_only_chunk`).
+    /// Used by the streaming adapter to attach the sampled token IDs
+    /// drained from its pending buffer onto the next client-visible chunk.
+    pub fn with_token_ids(mut self, ids: Vec<u32>) -> Self {
+        if !ids.is_empty()
+            && let Some(c) = self.choices.first_mut()
+        {
+            c.token_ids = ids;
+        }
+        self
     }
 
     /// Final chunk carrying only `finish_reason`, with `usage:null`. Used
@@ -490,6 +517,7 @@ impl ChatCompletionChunk {
                 },
                 finish_reason: Some(finish_reason.to_string()),
                 logprobs: None,
+                token_ids: Vec::new(),
             }],
             usage: None,
         }

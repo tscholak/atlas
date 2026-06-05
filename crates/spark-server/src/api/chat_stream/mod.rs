@@ -71,6 +71,7 @@ pub(crate) async fn chat_completions_stream(
     req_metadata: Option<std::collections::HashMap<String, String>>,
     req_ctx: Option<crate::rate_limiter::RequestContext>,
     dump_seq: Option<u64>,
+    return_token_ids: bool,
 ) -> Result<Response, (StatusCode, String)> {
     // service_tier + metadata are request echoes only; the chat-completion-
     // chunk schema doesn't carry them, but we surface them via the final
@@ -161,12 +162,14 @@ pub(crate) async fn chat_completions_stream(
         req_stream_include_usage,
         req_ctx,
         prompt_len,
+        return_token_ids,
     );
 
     let token_stream = ReceiverStream::new(token_rx).flat_map(move |event| {
         let mut sse_events: Vec<Result<Event, std::convert::Infallible>> = Vec::new();
         match event {
             StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
+                adapter.buffer_token_id(tok);
                 for ev in stepper.step_token(tok) {
                     adapter.translate(ev, &mut sse_events);
                 }

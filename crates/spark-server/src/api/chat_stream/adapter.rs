@@ -46,6 +46,16 @@ pub(super) struct StreamingAdapter {
     /// Filled by `set_usage_inputs` when `StreamEvent::Done` arrives,
     /// consumed when `Stopped` is translated.
     pub(super) usage_inputs: Option<UsageInputs>,
+
+    // ── return_token_ids (vLLM-compatible extension) ────────────────
+    /// When true, every sampled token id passed to `buffer_token_id`
+    /// is held until the next client-visible chunk drains it onto
+    /// `choices[0].token_ids`. Default false — opt-in only.
+    pub(super) return_token_ids: bool,
+    /// Tokens sampled since the last drain. Always empty when
+    /// `return_token_ids = false` (buffer_token_id is a no-op).
+    /// Invariant: Σ drained == usage.completion_tokens exactly.
+    pub(super) pending_token_ids: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +80,7 @@ impl StreamingAdapter {
         req_stream_include_usage: bool,
         req_ctx: Option<crate::rate_limiter::RequestContext>,
         prompt_len: usize,
+        return_token_ids: bool,
     ) -> Self {
         Self {
             state,
@@ -82,7 +93,25 @@ impl StreamingAdapter {
             prompt_len,
             choice: ChoiceBuilder::new(0),
             usage_inputs: None,
+            return_token_ids,
+            pending_token_ids: Vec::new(),
         }
+    }
+
+    /// Record one sampled token id. No-op when `return_token_ids=false`.
+    /// Called from the streaming entry point BEFORE `stepper.step_token`,
+    /// so the id buffered here is exactly the one whose effects (deltas,
+    /// tool-call events, stop) translate into the next emitted chunk.
+    pub(super) fn buffer_token_id(&mut self, tok: u32) {
+        if self.return_token_ids {
+            self.pending_token_ids.push(tok);
+        }
+    }
+
+    /// Drain the pending buffer. Returns `Vec::new()` when the request
+    /// did not opt in (buffer is always empty in that case).
+    fn take_pending_ids(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pending_token_ids)
     }
 
     /// Cache the per-`StreamEvent::Done` usage data so the terminal
@@ -96,14 +125,17 @@ impl StreamingAdapter {
     /// drives the usage chunk(s), the dump emit, and the rate-limit
     /// true-up.
     pub(super) fn translate(&mut self, ev: FsmEvent, out: &mut SseVec) {
-        // Emit the wire chunk(s) first.
+        // Emit the wire chunk(s) first. Each client-visible chunk
+        // drains the pending sampled-token-id buffer onto its
+        // `choices[0].token_ids` (no-op when return_token_ids=false).
         match &ev {
             FsmEvent::ReasoningDelta(text) => {
                 let chunk = ChatCompletionChunk::reasoning_chunk(
                     &self.model,
                     &self.id,
                     text.clone(),
-                );
+                )
+                .with_token_ids(self.take_pending_ids());
                 push(out, &chunk);
             }
             FsmEvent::ContentDelta(text) => {
@@ -111,7 +143,8 @@ impl StreamingAdapter {
                     &self.model,
                     &self.id,
                     text.clone(),
-                );
+                )
+                .with_token_ids(self.take_pending_ids());
                 push(out, &chunk);
             }
             FsmEvent::ToolCallStart { id, name, idx } => {
@@ -124,7 +157,8 @@ impl StreamingAdapter {
                     },
                 };
                 let chunk =
-                    ChatCompletionChunk::tool_call_start_chunk(&self.model, &self.id, &tc, *idx);
+                    ChatCompletionChunk::tool_call_start_chunk(&self.model, &self.id, &tc, *idx)
+                        .with_token_ids(self.take_pending_ids());
                 push(out, &chunk);
             }
             FsmEvent::ToolCallArgDelta { args, idx } => {
@@ -133,13 +167,15 @@ impl StreamingAdapter {
                     &self.id,
                     *idx,
                     args,
-                );
+                )
+                .with_token_ids(self.take_pending_ids());
                 push(out, &chunk);
             }
             FsmEvent::ToolCallEnd { .. } | FsmEvent::Stopped { .. } => {
                 // No direct wire chunk. ToolCallEnd → log+metric below
                 // (after apply, so the builder has the assembled
-                // call). Stopped → terminal cascade below.
+                // call). Stopped → terminal cascade below (drains
+                // residual token_ids onto the final chunk).
             }
         }
         // Mirror onto the dump builder.
@@ -180,17 +216,25 @@ impl StreamingAdapter {
         );
 
         // Terminal SSE chunk(s): either usage_only + final-no-usage,
-        // or done-chunk with embedded usage.
+        // or done-chunk with embedded usage. Residual sampled-token-ids
+        // (tokens emitted since the last client-visible delta — e.g.
+        // </think>, the EOS marker, a stop token) attach to the chunk
+        // that carries `choices` so the per-request Σ token_ids equals
+        // usage.completion_tokens exactly. `usage_only_chunk` has
+        // `choices: []`, so the residual goes on `final_chunk_no_usage`.
+        let residual_ids = self.take_pending_ids();
         if self.req_stream_include_usage {
             let usage_chunk =
                 ChatCompletionChunk::usage_only_chunk(&self.model, &self.id, usage.clone());
             push(out, &usage_chunk);
             let final_chunk =
-                ChatCompletionChunk::final_chunk_no_usage(&self.model, &self.id, &fr);
+                ChatCompletionChunk::final_chunk_no_usage(&self.model, &self.id, &fr)
+                    .with_token_ids(residual_ids);
             push(out, &final_chunk);
         } else {
             let done_chunk =
-                ChatCompletionChunk::done_chunk(&self.model, &self.id, &fr, usage.clone());
+                ChatCompletionChunk::done_chunk(&self.model, &self.id, &fr, usage.clone())
+                    .with_token_ids(residual_ids);
             push(out, &done_chunk);
         }
 

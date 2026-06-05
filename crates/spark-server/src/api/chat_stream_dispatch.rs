@@ -101,6 +101,7 @@ pub(super) async fn dispatch_streaming(
         req_metadata,
         ctx_for_stream,
         dump_seq,
+        req.return_token_ids,
     )
     .await
     {
